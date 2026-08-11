@@ -1,6 +1,7 @@
 package com.samtius.arenaparser.service;
 
 import com.samtius.arenaparser.parser.CombatLogParser;
+import com.samtius.arenaparser.parser.ArenaMatchDetector;
 import org.junit.jupiter.api.Test;
 
 import java.net.URISyntaxException;
@@ -14,6 +15,7 @@ class CombatLogImportServiceTest {
     void readsConfiguredCombatLogAndCreatesSummary() throws Exception {
         var service = new CombatLogImportService(
                 new CombatLogParser(),
+                new ArenaMatchDetector(new CombatLogParser()),
                 testLogPath().toString()
         );
 

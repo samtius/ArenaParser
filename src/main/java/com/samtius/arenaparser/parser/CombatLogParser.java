@@ -6,6 +6,7 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -28,19 +29,20 @@ public class CombatLogParser {
     }
 
     public Optional<SpellDamageEvent> parseDamageEvent(String line) {
-        var matcher = LOG_LINE.matcher(line);
-        if (!matcher.matches()) {
+        var parsedLine = parseLine(line);
+        if (parsedLine.isEmpty()) {
             return Optional.empty();
         }
 
-        var fields = splitCombatLogFields(matcher.group("event"));
-        if (fields.size() < 13 || !"SPELL_DAMAGE".equals(fields.getFirst())) {
+        var combatLogLine = parsedLine.get();
+        var fields = combatLogLine.fields();
+        if (fields.size() < 13 || !"SPELL_DAMAGE".equals(combatLogLine.eventType())) {
             return Optional.empty();
         }
 
         try {
             return Optional.of(new SpellDamageEvent(
-                    matcher.group("timestamp"),
+                    combatLogLine.timestamp(),
                     fields.get(1),
                     fields.get(2),
                     fields.get(5),
@@ -52,6 +54,24 @@ public class CombatLogParser {
         } catch (NumberFormatException exception) {
             return Optional.empty();
         }
+    }
+
+    public Optional<CombatLogLine> parseLine(String line) {
+        var matcher = LOG_LINE.matcher(line);
+        if (!matcher.matches()) {
+            return Optional.empty();
+        }
+
+        var fields = splitCombatLogFields(matcher.group("event"));
+        if (fields.isEmpty() || fields.getFirst() == null) {
+            return Optional.empty();
+        }
+
+        return Optional.of(new CombatLogLine(
+                matcher.group("timestamp"),
+                fields.getFirst(),
+                Collections.unmodifiableList(new ArrayList<>(fields))
+        ));
     }
 
     private long parseDamageAmount(List<String> fields) {

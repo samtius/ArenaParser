@@ -1,6 +1,7 @@
 package com.samtius.arenaparser.controller;
 
 import com.samtius.arenaparser.dto.DamageSummaryResponse;
+import com.samtius.arenaparser.parser.DetectedArenaMatch;
 import com.samtius.arenaparser.service.CombatLogImportService;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -8,6 +9,7 @@ import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ResponseStatusException;
 
 import java.io.IOException;
+import java.util.List;
 
 import static org.springframework.http.HttpStatus.INTERNAL_SERVER_ERROR;
 
@@ -29,6 +31,19 @@ public class CombatLogController {
             throw new ResponseStatusException(
                     INTERNAL_SERVER_ERROR,
                     "Could not read the configured combat log",
+                    exception
+            );
+        }
+    }
+
+    @GetMapping("/arena-matches")
+    public List<DetectedArenaMatch> arenaMatches() {
+        try {
+            return combatLogImportService.detectArenaMatches();
+        } catch (IOException | IllegalStateException exception) {
+            throw new ResponseStatusException(
+                    INTERNAL_SERVER_ERROR,
+                    "Could not detect arena matches in the configured combat log",
                     exception
             );
         }
