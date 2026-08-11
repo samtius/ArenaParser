@@ -57,7 +57,10 @@ class ArenaMatchServiceTest {
                 0,
                 1,
                 109,
-                MatchResult.LOSS
+                MatchResult.LOSS,
+                com.samtius.arenaparser.dto.MatchCombatDetails.empty(),
+                null,
+                null
         );
 
         assertThat(service.importDetectedMatches(List.of(detected))).isEqualTo(1);

@@ -40,6 +40,11 @@ public class CombatLogImportService {
         return arenaMatchDetector.detect(resolveCombatLogPath());
     }
 
+    public CombatLogState currentCombatLogState() throws IOException {
+        var path = resolveCombatLogPath();
+        return new CombatLogState(path, Files.getLastModifiedTime(path).toMillis(), Files.size(path));
+    }
+
     private Path resolveCombatLogPath() throws IOException {
         if (combatLogPath == null) {
             throw new IllegalStateException("Combat log path has not been configured");
@@ -66,5 +71,8 @@ public class CombatLogImportService {
         } catch (IOException exception) {
             return Long.MIN_VALUE;
         }
+    }
+
+    public record CombatLogState(Path path, long lastModified, long size) {
     }
 }

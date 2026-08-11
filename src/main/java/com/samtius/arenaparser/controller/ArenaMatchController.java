@@ -39,6 +39,12 @@ public class ArenaMatchController {
                 .orElseThrow(() -> new ResponseStatusException(NOT_FOUND, "Arena match not found"));
     }
 
+    @GetMapping("/{id}/details")
+    public com.samtius.arenaparser.dto.MatchCombatDetails findDetails(@PathVariable long id) {
+        return arenaMatchService.findCombatDetails(id)
+                .orElseThrow(() -> new ResponseStatusException(NOT_FOUND, "Arena match not found"));
+    }
+
     @PostMapping
     public ResponseEntity<ArenaMatch> create(@Valid @RequestBody CreateArenaMatchRequest request) {
         var createdMatch = arenaMatchService.create(request);

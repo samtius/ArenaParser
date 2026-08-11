@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState, type CSSProperties } from "react";
 
-type MatchResult = "WIN" | "LOSS" | "UNKNOWN";
+type MatchResult = "WIN" | "LOSS" | "DRAW" | "UNKNOWN";
 
 interface ArenaMatch {
   id: number;
@@ -12,12 +12,43 @@ interface ArenaMatch {
   playerTeam: number | null;
   winningTeam: number | null;
   result: MatchResult;
+  playerWins: number | null;
+  playerLosses: number | null;
 }
 
 interface ImportResponse {
   detectedMatches: number;
   importedMatches: number;
   skippedMatches: number;
+}
+
+interface SpellStatistic {
+  spellId: number; name: string; damage: number; healing: number; absorbs: number; damageTaken: number;
+  casts: number; hits: number; criticals: number; overhealing: number;
+}
+
+interface UtilityAction { offsetSeconds: number; spell: string | null; target: string | null; affectedSpell: string | null; }
+interface ReceivedEvent { secondsBeforeDeath: number; type: "DAMAGE" | "HEALING"; source: string | null; spell: string | null; amount: number; healthAfter: number; maxHealth: number; }
+interface DeathRecap { deathNumber: number; offsetSeconds: number; receivedEvents: ReceivedEvent[]; }
+
+interface ParticipantDetails {
+  guid: string; name: string; className: string; specializationName: string; team: number | null; damage: number; healing: number;
+  absorbs: number; kills: number; deaths: number; interrupts: number; dispels: number;
+  damageTaken: number; spells: SpellStatistic[]; interruptDetails: UtilityAction[];
+  dispelDetails: UtilityAction[]; deathRecaps: DeathRecap[];
+}
+
+interface KeyEvent {
+  offsetSeconds: number; type: string; source: string | null; target: string | null; spell: string | null;
+}
+
+interface RoundDetails { roundNumber: number; durationSeconds: number; playerTeam: number | null; winningTeam: number | null; result: MatchResult; participants: ParticipantDetails[]; }
+interface MatchDetails { participants: ParticipantDetails[]; keyEvents: KeyEvent[]; rounds: RoundDetails[]; }
+
+function resultLabel(match: ArenaMatch): string {
+  return match.playerWins == null || match.playerLosses == null
+    ? match.result
+    : `${match.result} ${match.playerWins}-${match.playerLosses}`;
 }
 
 type MatchCategory = "solo-shuffle" | "2v2" | "3v3" | "skirmish";
@@ -55,7 +86,20 @@ function formatDate(value: string): string {
   }).format(new Date(value));
 }
 
-function MatchList({ matches, emptyMessage }: { matches: ArenaMatch[]; emptyMessage: string }) {
+function formatNumber(value: number): string {
+  return new Intl.NumberFormat("en-GB", { notation: "compact", maximumFractionDigits: 1 }).format(value);
+}
+
+function barStyle(value: number, maximum: number): CSSProperties {
+  return { "--bar-width": `${maximum > 0 ? (value / maximum) * 60 : 0}%` } as CSSProperties;
+}
+
+function healthBarStyle(healthAfter: number, maxHealth: number): CSSProperties {
+  const percentage = maxHealth > 0 ? Math.max(0, Math.min(100, (healthAfter / maxHealth) * 100)) : 0;
+  return { "--bar-width": `${percentage}%` } as CSSProperties;
+}
+
+function MatchList({ matches, emptyMessage, onSelect }: { matches: ArenaMatch[]; emptyMessage: string; onSelect: (match: ArenaMatch) => void }) {
   if (matches.length === 0) {
     return <div className="empty-state compact"><strong>No matches yet</strong><p>{emptyMessage}</p></div>;
   }
@@ -66,15 +110,66 @@ function MatchList({ matches, emptyMessage }: { matches: ArenaMatch[]; emptyMess
         <span>Result</span><span>Arena</span><span>Type</span><span>Date</span><span>Duration</span>
       </div>
       {matches.map((match) => (
-        <article className="match-row" key={match.id}>
-          <span className={`result-badge ${match.result.toLowerCase()}`}>{match.result}</span>
+        <button className="match-row match-row-button" key={match.id} onClick={() => onSelect(match)} aria-label={`View details for ${match.arena}`}>
+          <span className={`result-badge ${match.result.toLowerCase()}`}>{resultLabel(match)}</span>
           <span className="arena-name"><strong>{match.arena}</strong><small>Instance {match.instanceId ?? "–"}</small></span>
           <span data-label="Type">{match.matchType ?? "Unknown"}</span>
           <span data-label="Date">{formatDate(match.startedAt)}</span>
           <span data-label="Duration" className="duration">{formatDuration(match.durationSeconds)}</span>
-        </article>
+        </button>
       ))}
     </div>
+  );
+}
+
+function SpellSection({ title, spells, metric }: { title: string; spells: SpellStatistic[]; metric: "damage" | "healing" | "damageTaken" }) {
+  const sorted = spells.filter((spell) => spell[metric] > 0).sort((a, b) => b[metric] - a[metric]);
+  const maximum = sorted[0]?.[metric] ?? 0;
+  return (
+    <details className="breakdown-section">
+      <summary><span>{title}</span><strong>{formatNumber(sorted.reduce((sum, spell) => sum + spell[metric], 0))}</strong></summary>
+      {sorted.length === 0 ? <p className="no-breakdown">No {title.toLowerCase()} recorded.</p> : (
+        <div className="breakdown-list">
+          {sorted.map((spell) => <div className={`bar-row ${metric === "healing" ? "healing-bar" : "damage-bar"}`} style={barStyle(spell[metric], maximum)} key={`${metric}-${spell.spellId}`}><span>{spell.name}</span><strong>{formatNumber(spell[metric])}</strong></div>)}
+        </div>
+      )}
+    </details>
+  );
+}
+
+function UtilitySection({ title, actions }: { title: string; actions: UtilityAction[] }) {
+  return (
+    <details className="breakdown-section">
+      <summary><span>{title}</span><strong>{actions.length}</strong></summary>
+      {actions.length === 0 ? <p className="no-breakdown">No {title.toLowerCase()} recorded.</p> : (
+        <div className="utility-list">
+          {actions.map((action, index) => (
+            <div key={`${title}-${action.offsetSeconds}-${index}`}>
+              <time>{formatDuration(action.offsetSeconds)}</time>
+              <span><strong>{action.spell ?? title.slice(0, -1)}</strong> on {action.target ?? "Unknown"}<small>{action.affectedSpell ? `Removed/stopped: ${action.affectedSpell}` : ""}</small></span>
+            </div>
+          ))}
+        </div>
+      )}
+    </details>
+  );
+}
+
+function DeathRecapSection({ recaps }: { recaps: DeathRecap[] }) {
+  return (
+    <details className="breakdown-section death-recaps">
+      <summary><span>Death recaps</span><strong>{recaps.length}</strong></summary>
+      {recaps.length === 0 ? <p className="no-breakdown">No deaths recorded.</p> : recaps.map((recap) => (
+        <div className="death-recap" key={`${recap.deathNumber}-${recap.offsetSeconds}`}>
+          <h4>Death {recap.deathNumber} <span>at {formatDuration(recap.offsetSeconds)}</span></h4>
+          {recap.receivedEvents.length === 0 ? <p>No damage or healing in the final two seconds.</p> : recap.receivedEvents.map((event, index) => (
+            <div className={`bar-row ${event.type === "HEALING" ? "healing-bar" : "damage-bar"}`} style={healthBarStyle(event.healthAfter, event.maxHealth)} key={`${event.secondsBeforeDeath}-${index}`}>
+              <time>-{event.secondsBeforeDeath.toFixed(2)}s</time><span>{event.spell ?? event.type} <small>from {event.source ?? "Unknown"}</small></span><span className="recap-values"><strong>{event.type === "HEALING" ? "+" : "-"}{formatNumber(event.amount)}</strong><small>{formatNumber(event.healthAfter)} / {formatNumber(event.maxHealth)} HP</small></span>
+            </div>
+          ))}
+        </div>
+      ))}
+    </details>
   );
 }
 
@@ -84,6 +179,10 @@ function App() {
   const [importing, setImporting] = useState(false);
   const [shuttingDown, setShuttingDown] = useState(false);
   const [stopped, setStopped] = useState(false);
+  const [selectedMatch, setSelectedMatch] = useState<ArenaMatch | null>(null);
+  const [matchDetails, setMatchDetails] = useState<MatchDetails | null>(null);
+  const [selectedRound, setSelectedRound] = useState(1);
+  const [detailsLoading, setDetailsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
@@ -163,6 +262,23 @@ function App() {
     }
   }
 
+  async function openMatch(match: ArenaMatch) {
+    setSelectedMatch(match);
+    setSelectedRound(1);
+    setMatchDetails(null);
+    setDetailsLoading(true);
+    try {
+      const response = await fetch(`/api/matches/${match.id}/details`);
+      if (!response.ok) throw new Error(`Could not load match details (${response.status})`);
+      setMatchDetails((await response.json()) as MatchDetails);
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "Could not load match details");
+      setSelectedMatch(null);
+    } finally {
+      setDetailsLoading(false);
+    }
+  }
+
   if (stopped) {
     return (
       <main className="stopped-screen">
@@ -173,6 +289,10 @@ function App() {
       </main>
     );
   }
+
+  const activeRound = matchDetails?.rounds?.find((round) => round.roundNumber === selectedRound);
+  const detailParticipants = activeRound?.participants ?? matchDetails?.participants ?? [];
+  const detailWinningTeam = activeRound?.winningTeam ?? selectedMatch?.winningTeam;
 
   return (
     <main className="app-shell">
@@ -227,7 +347,7 @@ function App() {
 
         {loading ? <div className="empty-state">Loading matches…</div> : matches.length === 0 ? (
           <div className="empty-state"><strong>No matches yet</strong><p>Import your latest combat log to get started.</p></div>
-        ) : <MatchList matches={matches.slice(0, 8)} emptyMessage="Import your latest combat log to get started." />}
+        ) : <MatchList matches={matches.slice(0, 8)} emptyMessage="Import your latest combat log to get started." onSelect={openMatch} />}
       </section>
 
       <div className="category-sections">
@@ -242,11 +362,81 @@ function App() {
               <MatchList
                 matches={categoryMatches.slice(0, 5)}
                 emptyMessage={`Your recent ${category.title} matches will appear here.`}
+                onSelect={openMatch}
               />
             </section>
           );
         })}
       </div>
+
+      {selectedMatch && (
+        <div className="modal-backdrop" role="presentation" onMouseDown={() => setSelectedMatch(null)}>
+          <section className="match-detail" role="dialog" aria-modal="true" aria-labelledby="match-detail-title" onMouseDown={(event) => event.stopPropagation()}>
+            <header className="detail-header">
+              <div>
+                <span className={`result-badge ${selectedMatch.result.toLowerCase()}`}>{resultLabel(selectedMatch)}</span>
+                <h2 id="match-detail-title">{selectedMatch.arena}</h2>
+                <p>{selectedMatch.matchType ?? "Unknown mode"} · {formatDate(selectedMatch.startedAt)} · {formatDuration(selectedMatch.durationSeconds)}</p>
+              </div>
+              <button className="close-button" onClick={() => setSelectedMatch(null)} aria-label="Close match details">×</button>
+            </header>
+
+            {detailsLoading ? <div className="detail-loading">Loading combat statistics…</div> : matchDetails && (
+              <>
+                {matchDetails.rounds?.length > 0 && (
+                  <nav className="round-tabs" aria-label="Solo Shuffle rounds">
+                    {matchDetails.rounds.map((round) => (
+                      <button
+                        className={`${round.result.toLowerCase()} ${selectedRound === round.roundNumber ? "active" : ""}`}
+                        key={round.roundNumber}
+                        onClick={() => setSelectedRound(round.roundNumber)}
+                      >
+                        <span>Round {round.roundNumber}</span>
+                        <strong>{round.result}</strong>
+                      </button>
+                    ))}
+                  </nav>
+                )}
+                <div className="detail-summary">
+                  <div><span>Players</span><strong>{detailParticipants.length}</strong></div>
+                  <div><span>Total damage</span><strong>{formatNumber(detailParticipants.reduce((sum, player) => sum + player.damage, 0))}</strong></div>
+                  <div><span>Total healing</span><strong>{formatNumber(detailParticipants.reduce((sum, player) => sum + player.healing, 0))}</strong></div>
+                  <div><span>Damage taken</span><strong>{formatNumber(detailParticipants.reduce((sum, player) => sum + player.damageTaken, 0))}</strong></div>
+                </div>
+
+                <div className="teams-grid">
+                  {[0, 1].map((team) => (
+                    <section className="team-panel" key={team}>
+                      <div className="team-heading"><h3>Team {team + 1}</h3><span>{team === detailWinningTeam ? "Winner" : ""}</span></div>
+                      {detailParticipants.filter((player) => player.team === team).map((player) => (
+                        <article className="player-card" key={player.guid}>
+                          <div className="player-heading"><span className="player-identity"><strong>{player.name}</strong><small>{player.className ?? "Unknown class"} · {player.specializationName ?? "Unknown specialization"}</small></span><span>{player.kills} K · {player.deaths} D</span></div>
+                          <div className="player-metrics">
+                            <span><small>Damage</small>{formatNumber(player.damage)}</span>
+                            <span><small>Healing</small>{formatNumber(player.healing)}</span>
+                            <span><small>Absorbs</small>{formatNumber(player.absorbs)}</span>
+                            <span><small>Damage taken</small>{formatNumber(player.damageTaken)}</span>
+                            <span><small>Utility</small>{player.interrupts} int · {player.dispels} disp</span>
+                          </div>
+                          <div className="player-breakdowns">
+                            <SpellSection title="Damage" spells={player.spells} metric="damage" />
+                            <SpellSection title="Healing" spells={player.spells} metric="healing" />
+                            <SpellSection title="Damage taken" spells={player.spells} metric="damageTaken" />
+                            <UtilitySection title="Dispels" actions={player.dispelDetails} />
+                            <UtilitySection title="Interrupts" actions={player.interruptDetails} />
+                            <DeathRecapSection recaps={player.deathRecaps} />
+                          </div>
+                        </article>
+                      ))}
+                    </section>
+                  ))}
+                </div>
+
+              </>
+            )}
+          </section>
+        </div>
+      )}
     </main>
   );
 }

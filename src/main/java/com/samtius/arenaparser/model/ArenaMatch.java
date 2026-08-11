@@ -8,6 +8,7 @@ import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
 import jakarta.persistence.Column;
+import com.fasterxml.jackson.annotation.JsonIgnore;
 
 import java.time.Instant;
 
@@ -25,6 +26,12 @@ public class ArenaMatch {
     private String matchType;
     private Integer playerTeam;
     private Integer winningTeam;
+    private Integer playerWins;
+    private Integer playerLosses;
+
+    @JsonIgnore
+    @Column(columnDefinition = "text")
+    private String combatDetailsJson;
 
     @Column(unique = true)
     private String sourceKey;
@@ -104,11 +111,35 @@ public class ArenaMatch {
         this.winningTeam = winningTeam;
     }
 
+    public Integer getPlayerWins() {
+        return playerWins;
+    }
+
+    public void setPlayerWins(Integer playerWins) {
+        this.playerWins = playerWins;
+    }
+
+    public Integer getPlayerLosses() {
+        return playerLosses;
+    }
+
+    public void setPlayerLosses(Integer playerLosses) {
+        this.playerLosses = playerLosses;
+    }
+
     public String getSourceKey() {
         return sourceKey;
     }
 
     public void setSourceKey(String sourceKey) {
         this.sourceKey = sourceKey;
+    }
+
+    public String getCombatDetailsJson() {
+        return combatDetailsJson;
+    }
+
+    public void setCombatDetailsJson(String combatDetailsJson) {
+        this.combatDetailsJson = combatDetailsJson;
     }
 }

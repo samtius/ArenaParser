@@ -6,4 +6,6 @@ import org.springframework.data.jpa.repository.JpaRepository;
 public interface ArenaMatchRepository extends JpaRepository<ArenaMatch, Long> {
 
     boolean existsBySourceKey(String sourceKey);
+
+    java.util.Optional<ArenaMatch> findBySourceKey(String sourceKey);
 }
