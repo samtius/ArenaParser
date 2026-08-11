@@ -35,3 +35,7 @@ WoWCombatLog.txt
 *.db
 *.sqlite
 *.sqlite3
+
+# Local application data
+data/*
+!data/.gitkeep
