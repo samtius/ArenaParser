@@ -20,6 +20,28 @@ interface ImportResponse {
   skippedMatches: number;
 }
 
+type MatchCategory = "solo-shuffle" | "2v2" | "3v3" | "skirmish";
+
+const matchCategories: Array<{
+  id: MatchCategory;
+  title: string;
+  description: string;
+}> = [
+  { id: "solo-shuffle", title: "Solo Shuffle", description: "Recent rated solo rounds" },
+  { id: "2v2", title: "2v2", description: "Recent two-player team matches" },
+  { id: "3v3", title: "3v3", description: "Recent three-player team matches" },
+  { id: "skirmish", title: "Arena Skirmishes", description: "Recent unranked arena matches" },
+];
+
+function belongsToCategory(match: ArenaMatch, category: MatchCategory): boolean {
+  const type = (match.matchType ?? "").toLowerCase().replaceAll(" ", "");
+
+  if (category === "solo-shuffle") return type.includes("solo") || type.includes("shuffle");
+  if (category === "2v2") return type.includes("2v2") || type.includes("2x2");
+  if (category === "3v3") return type.includes("3v3") || type.includes("3x3");
+  return type.includes("skirmish");
+}
+
 function formatDuration(totalSeconds: number): string {
   const minutes = Math.floor(totalSeconds / 60);
   const seconds = totalSeconds % 60;
@@ -31,6 +53,29 @@ function formatDate(value: string): string {
     dateStyle: "medium",
     timeStyle: "short",
   }).format(new Date(value));
+}
+
+function MatchList({ matches, emptyMessage }: { matches: ArenaMatch[]; emptyMessage: string }) {
+  if (matches.length === 0) {
+    return <div className="empty-state compact"><strong>No matches yet</strong><p>{emptyMessage}</p></div>;
+  }
+
+  return (
+    <div className="match-list">
+      <div className="match-row table-header" aria-hidden="true">
+        <span>Result</span><span>Arena</span><span>Type</span><span>Date</span><span>Duration</span>
+      </div>
+      {matches.map((match) => (
+        <article className="match-row" key={match.id}>
+          <span className={`result-badge ${match.result.toLowerCase()}`}>{match.result}</span>
+          <span className="arena-name"><strong>{match.arena}</strong><small>Instance {match.instanceId ?? "–"}</small></span>
+          <span data-label="Type">{match.matchType ?? "Unknown"}</span>
+          <span data-label="Date">{formatDate(match.startedAt)}</span>
+          <span data-label="Duration" className="duration">{formatDuration(match.durationSeconds)}</span>
+        </article>
+      ))}
+    </div>
+  );
 }
 
 function App() {
@@ -69,6 +114,16 @@ function App() {
     const decided = wins + losses;
     return { wins, losses, winRate: decided === 0 ? 0 : Math.round((wins / decided) * 100) };
   }, [matches]);
+
+  const categorizedMatches = useMemo(
+    () => Object.fromEntries(
+      matchCategories.map((category) => [
+        category.id,
+        matches.filter((match) => belongsToCategory(match, category.id)),
+      ]),
+    ) as Record<MatchCategory, ArenaMatch[]>,
+    [matches],
+  );
 
   async function importLatestLog() {
     setImporting(true);
@@ -136,9 +191,8 @@ function App() {
 
       <section className="hero" id="top">
         <div>
-          <p className="eyebrow">Match overview</p>
-          <h1>Your arena data,<br />without distractions.</h1>
-          <p className="hero-copy">Import the latest combat log and track your match results.</p>
+          <p className="eyebrow">Dashboard</p>
+          <h1>Arena match history</h1>
         </div>
         <div className="hero-actions">
           <button className="primary-button" onClick={importLatestLog} disabled={importing}>
@@ -156,29 +210,43 @@ function App() {
         <article className="stat-card loss"><span>Losses</span><strong>{stats.losses}</strong><small>Of decided matches</small></article>
       </section>
 
-      <section className="matches-panel">
+      <nav className="category-nav" aria-label="Match history categories">
+        <a href="#recent-matches"><strong>{matches.length}</strong><span>All matches</span></a>
+        {matchCategories.map((category) => (
+          <a href={`#${category.id}`} key={category.id}>
+            <strong>{categorizedMatches[category.id].length}</strong><span>{category.title}</span>
+          </a>
+        ))}
+      </nav>
+
+      <section className="matches-panel" id="recent-matches">
         <div className="section-heading">
-          <div><p className="eyebrow">History</p><h2>Recent matches</h2></div>
-          <span>{matches.length} matches</span>
+          <div><p className="eyebrow">All arena modes</p><h2>Recent matches</h2></div>
+          <span>{Math.min(matches.length, 8)} of {matches.length} matches</span>
         </div>
 
         {loading ? <div className="empty-state">Loading matches…</div> : matches.length === 0 ? (
           <div className="empty-state"><strong>No matches yet</strong><p>Import your latest combat log to get started.</p></div>
-        ) : (
-          <div className="match-list">
-            <div className="match-row table-header" aria-hidden="true"><span>Result</span><span>Arena</span><span>Type</span><span>Date</span><span>Duration</span></div>
-            {matches.map((match) => (
-              <article className="match-row" key={match.id}>
-                <span className={`result-badge ${match.result.toLowerCase()}`}>{match.result}</span>
-                <span className="arena-name"><strong>{match.arena}</strong><small>Instance {match.instanceId ?? "–"}</small></span>
-                <span data-label="Type">{match.matchType ?? "Unknown"}</span>
-                <span data-label="Date">{formatDate(match.startedAt)}</span>
-                <span data-label="Duration" className="duration">{formatDuration(match.durationSeconds)}</span>
-              </article>
-            ))}
-          </div>
-        )}
+        ) : <MatchList matches={matches.slice(0, 8)} emptyMessage="Import your latest combat log to get started." />}
       </section>
+
+      <div className="category-sections">
+        {matchCategories.map((category) => {
+          const categoryMatches = categorizedMatches[category.id];
+          return (
+            <section className="matches-panel category-section" id={category.id} key={category.id}>
+              <div className="section-heading">
+                <div><p className="eyebrow">{category.description}</p><h2>{category.title}</h2></div>
+                <span>{categoryMatches.length} matches</span>
+              </div>
+              <MatchList
+                matches={categoryMatches.slice(0, 5)}
+                emptyMessage={`Your recent ${category.title} matches will appear here.`}
+              />
+            </section>
+          );
+        })}
+      </div>
     </main>
   );
 }
