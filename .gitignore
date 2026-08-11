@@ -1,0 +1,37 @@
+# Java build output
+target/
+build/
+out/
+*.class
+*.jar
+*.war
+
+# Maven wrapper cache
+.mvn/timing.properties
+
+# Gradle
+.gradle/
+
+# IDEs
+.idea/
+*.iml
+.classpath
+.project
+.settings/
+.vscode/
+
+# Operating system files
+.DS_Store
+Thumbs.db
+
+# Logs and local configuration
+*.log
+.env
+application-local.properties
+application-local.yml
+
+# WoW combat logs and local databases
+WoWCombatLog.txt
+*.db
+*.sqlite
+*.sqlite3
