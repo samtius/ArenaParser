@@ -43,4 +43,5 @@ data/*
 # Frontend build output
 frontend/node_modules/
 frontend/dist/
+.pnpm-store/
 .run/
