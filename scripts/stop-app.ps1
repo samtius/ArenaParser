@@ -2,6 +2,12 @@ $ErrorActionPreference = "Stop"
 
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $runDirectory = Join-Path $projectRoot ".run"
+. (Join-Path $PSScriptRoot "load-env.ps1") -Path (Join-Path $projectRoot ".env")
+
+$backendHost = if ($env:BACKEND_HOST) { $env:BACKEND_HOST } else { "127.0.0.1" }
+$backendPort = if ($env:BACKEND_PORT) { [int]$env:BACKEND_PORT } else { 8080 }
+$frontendHost = if ($env:FRONTEND_HOST) { $env:FRONTEND_HOST } else { "127.0.0.1" }
+$frontendPort = if ($env:FRONTEND_PORT) { [int]$env:FRONTEND_PORT } else { 5173 }
 
 function Stop-TrackedProcess {
     param(
@@ -48,14 +54,14 @@ function Stop-TrackedProcess {
 Stop-TrackedProcess `
     -PidFile (Join-Path $runDirectory "frontend.pid") `
     -ServiceName "Frontend" `
-    -Port 5173 `
-    -VerificationUrl "http://127.0.0.1:5173"
+    -Port $frontendPort `
+    -VerificationUrl "http://${frontendHost}:${frontendPort}"
 
 Stop-TrackedProcess `
     -PidFile (Join-Path $runDirectory "backend.pid") `
     -ServiceName "Backend" `
-    -Port 8080 `
-    -VerificationUrl "http://localhost:8080/api/health"
+    -Port $backendPort `
+    -VerificationUrl "http://${backendHost}:${backendPort}/api/health"
 
 Push-Location $projectRoot
 try {

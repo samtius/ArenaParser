@@ -6,8 +6,14 @@ $ErrorActionPreference = "Stop"
 
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $runDirectory = Join-Path $projectRoot ".run"
-$backendUrl = "http://localhost:8080/api/health"
-$frontendUrl = "http://127.0.0.1:5173"
+. (Join-Path $PSScriptRoot "load-env.ps1") -Path (Join-Path $projectRoot ".env")
+
+$backendHost = if ($env:BACKEND_HOST) { $env:BACKEND_HOST } else { "127.0.0.1" }
+$backendPort = if ($env:BACKEND_PORT) { [int]$env:BACKEND_PORT } else { 8080 }
+$frontendHost = if ($env:FRONTEND_HOST) { $env:FRONTEND_HOST } else { "127.0.0.1" }
+$frontendPort = if ($env:FRONTEND_PORT) { [int]$env:FRONTEND_PORT } else { 5173 }
+$backendUrl = "http://${backendHost}:${backendPort}/api/health"
+$frontendUrl = "http://${frontendHost}:${frontendPort}"
 
 New-Item -ItemType Directory -Force -Path $runDirectory | Out-Null
 
@@ -65,7 +71,7 @@ try {
 
     if (Test-Url -Url $backendUrl) {
         Write-Host "Restarting the existing backend..." -ForegroundColor Cyan
-        $connection = Get-NetTCPConnection -LocalPort 8080 -State Listen -ErrorAction SilentlyContinue |
+        $connection = Get-NetTCPConnection -LocalPort $backendPort -State Listen -ErrorAction SilentlyContinue |
             Select-Object -First 1
         if (-not $connection) {
             throw "The backend is reachable, but its process could not be identified. Stop it manually and try again."
@@ -107,13 +113,17 @@ try {
     if (-not (Test-Url -Url $frontendUrl)) {
         $vitePath = Join-Path $projectRoot "frontend\node_modules\vite\bin\vite.js"
         if (-not (Test-Path -LiteralPath $vitePath)) {
-            throw "Frontend packages are missing. Install them before starting the application."
+            Write-Host "Installing frontend packages..." -ForegroundColor Cyan
+            Push-Location (Join-Path $projectRoot "frontend")
+            try { & corepack pnpm install --frozen-lockfile }
+            finally { Pop-Location }
+            if ($LASTEXITCODE -ne 0) { throw "Frontend package installation failed." }
         }
 
         Write-Host "Starting frontend..." -ForegroundColor Cyan
         $frontendProcess = Start-Process `
             -FilePath "node" `
-            -ArgumentList @("node_modules\vite\bin\vite.js", "--host", "127.0.0.1", "--port", "5173") `
+            -ArgumentList @("node_modules\vite\bin\vite.js", "--host", $frontendHost, "--port", "$frontendPort") `
             -WorkingDirectory (Join-Path $projectRoot "frontend") `
             -WindowStyle Hidden `
             -RedirectStandardOutput (Join-Path $runDirectory "frontend.out.log") `
@@ -124,7 +134,7 @@ try {
     }
     else {
         Write-Host "Frontend is already running." -ForegroundColor Yellow
-        Save-ListeningProcessId -Port 5173 -PidFile (Join-Path $runDirectory "frontend.pid")
+        Save-ListeningProcessId -Port $frontendPort -PidFile (Join-Path $runDirectory "frontend.pid")
     }
 
     Wait-ForUrl -Url $frontendUrl -ServiceName "Frontend"
