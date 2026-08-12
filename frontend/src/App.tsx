@@ -48,10 +48,15 @@ interface PvpTalentSlot { slot_number?: number; selected?: { talent?: { name?: s
 interface TalentLoadout {
   is_active?: boolean; talent_loadout_code?: string;
   selected_class_talents?: TalentChoice[]; selected_spec_talents?: TalentChoice[]; selected_hero_talents?: TalentChoice[];
-  selected_hero_talent_tree?: { name?: string };
+  selected_class_talent_tree?: { name?: string; key?: { href?: string } }; selected_spec_talent_tree?: { name?: string; key?: { href?: string } };
+  selected_hero_talent_tree?: { name?: string; id?: number };
 }
 interface SpecializationLoadout { specialization?: { name?: string; id?: number }; pvp_talent_slots?: PvpTalentSlot[]; loadouts?: TalentLoadout[]; }
 interface CharacterSpecializations { specializations?: SpecializationLoadout[]; active_specialization?: { name?: string }; active_hero_talent_tree?: { name?: string }; }
+interface TreeRank { rank?: number; tooltip?: { talent?: { name?: string }; spell_tooltip?: { spell?: { id?: number; name?: string }; description?: string } }; }
+interface TreeNode { id: number; unlocks?: number[]; locked_by?: number[]; node_type?: { type?: string }; ranks?: TreeRank[]; display_row?: number; display_col?: number; raw_position_x?: number; raw_position_y?: number; }
+interface HeroTree { id: number; name: string; hero_talent_nodes?: TreeNode[]; }
+interface TalentTreeData { name?: string; class_talent_nodes?: TreeNode[]; spec_talent_nodes?: TreeNode[]; hero_talent_trees?: HeroTree[]; }
 
 interface SpellStatistic {
   spellId: number; name: string; damage: number; healing: number; absorbs: number; damageTaken: number;
@@ -178,17 +183,41 @@ function SpellIcon({ spellId, name, size = 28, showTitle = true }: { spellId: nu
   return <img className="spell-icon" src={`https://images.wowarenalogs.com/spells/${resolvedId}.jpg`} width={size} height={size} loading="lazy" alt="" title={showTitle ? name ?? "Unknown spell" : undefined} onError={(event) => { event.currentTarget.src = "https://images.wowarenalogs.com/spells/6603.jpg"; }} />;
 }
 
-function talentName(talent: TalentChoice): string {
-  return talent.tooltip?.talent?.name ?? talent.tooltip?.spell_tooltip?.spell?.name ?? `Talent ${talent.id ?? "unknown"}`;
-}
-
-function talentSpellId(talent: TalentChoice): number {
-  return talent.tooltip?.spell_tooltip?.spell?.id ?? 0;
-}
-
 function BattleNetIcon({ type, id, name, region, size = 38 }: { type: "item" | "spell"; id?: number; name?: string; region: string; size?: number }) {
   if (!id) return <span className="missing-game-icon" style={{ width: size, height: size }}>?</span>;
   return <img className="game-icon" src={`/api/media/${type}/${id}?region=${region}`} width={size} height={size} loading="lazy" alt="" title={name} />;
+}
+
+function treeIdFromHref(href?: string): number | null {
+  const match = href?.match(/talent-tree\/(\d+)/);
+  return match ? Number(match[1]) : null;
+}
+
+function WowTalentTree({ title, nodes, selected, region }: { title: string; nodes: TreeNode[]; selected: TalentChoice[]; region: string }) {
+  if (!nodes.length) return null;
+  const selectedByNode = new Map(selected.map((talent) => [talent.id, talent]));
+  const positions = nodes.map((node) => ({ node, x: node.raw_position_x ?? (node.display_col ?? 0) * 600, y: node.raw_position_y ?? (node.display_row ?? 0) * 600 }));
+  const minX = Math.min(...positions.map((entry) => entry.x)); const maxX = Math.max(...positions.map((entry) => entry.x));
+  const minY = Math.min(...positions.map((entry) => entry.y)); const maxY = Math.max(...positions.map((entry) => entry.y));
+  const width = 760; const height = Math.max(430, ((maxY - minY) / Math.max(1, maxX - minX)) * 700);
+  const point = (value: number, minimum: number, maximum: number, size: number) => 34 + ((value - minimum) / Math.max(1, maximum - minimum)) * (size - 68);
+  const byId = new Map(positions.map((entry) => [entry.node.id, entry]));
+  return <section className="wow-tree"><h4>{title}</h4><div className="wow-tree-canvas" style={{ aspectRatio: `${width} / ${height}` }}>
+    <svg viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none" aria-hidden="true">{positions.flatMap(({ node, x, y }) => (node.unlocks ?? []).map((targetId) => {
+      const target = byId.get(targetId); if (!target) return null;
+      const active = selectedByNode.has(node.id) && selectedByNode.has(targetId);
+      return <line className={active ? "selected" : ""} key={`${node.id}-${targetId}`} x1={point(x,minX,maxX,width)} y1={point(y,minY,maxY,height)} x2={point(target.x,minX,maxX,width)} y2={point(target.y,minY,maxY,height)} />;
+    }))}</svg>
+    {positions.map(({ node, x, y }) => {
+      const choice = selectedByNode.get(node.id); const rank = choice?.rank ?? 0;
+      const definition = choice?.tooltip ?? node.ranks?.[Math.max(0, rank - 1)]?.tooltip ?? node.ranks?.[0]?.tooltip;
+      const name = definition?.talent?.name ?? definition?.spell_tooltip?.spell?.name ?? `Talent ${node.id}`;
+      const spellId = definition?.spell_tooltip?.spell?.id; const maxRank = node.ranks?.length ?? 1;
+      return <div className={`wow-tree-node ${choice ? "selected" : "unselected"} ${node.node_type?.type?.toLowerCase() ?? ""}`} style={{ left: `${(point(x,minX,maxX,width)/width)*100}%`, top: `${(point(y,minY,maxY,height)/height)*100}%` }} title={`${name}${definition?.spell_tooltip?.description ? `\n${definition.spell_tooltip.description}` : ""}`} key={node.id}>
+        <BattleNetIcon type="spell" id={spellId} name={name} region={region} size={42} /><b>{rank}/{maxRank}</b><small>{name}</small>
+      </div>;
+    })}
+  </div></section>;
 }
 
 function ProfileDetails({ character, onClose, onSync, syncing }: { character: TrackedCharacter; onClose: () => void; onSync: () => void; syncing: boolean }) {
@@ -196,11 +225,17 @@ function ProfileDetails({ character, onClose, onSync, syncing }: { character: Tr
   const loadouts = character.specializations?.specializations ?? [];
   const activeSpecialization = loadouts.find((specialization) => specialization.specialization?.name === character.activeSpecialization) ?? loadouts[0];
   const active = activeSpecialization?.loadouts?.find((loadout) => loadout.is_active) ?? activeSpecialization?.loadouts?.[0];
-  const talentGroups = [
-    { title: "Class talents", values: active?.selected_class_talents ?? [] },
-    { title: "Specialization talents", values: active?.selected_spec_talents ?? [] },
-    { title: "Hero talents", values: active?.selected_hero_talents ?? [] },
-  ];
+  const [treeData, setTreeData] = useState<TalentTreeData | null>(null);
+  const [treeError, setTreeError] = useState<string | null>(null);
+  const treeId = treeIdFromHref(active?.selected_class_talent_tree?.key?.href);
+  const specializationId = activeSpecialization?.specialization?.id;
+  useEffect(() => {
+    setTreeData(null); setTreeError(null);
+    if (!treeId || !specializationId) return;
+    fetch(`/api/talent-trees/${treeId}/specializations/${specializationId}?region=${character.region}`)
+      .then((response) => { if (!response.ok) throw new Error(`Talent tree returned ${response.status}`); return response.json(); })
+      .then((data: TalentTreeData) => setTreeData(data)).catch((error: Error) => setTreeError(error.message));
+  }, [treeId, specializationId, character.region]);
   return <div className="modal-backdrop profile-modal-backdrop" role="presentation" onMouseDown={onClose}>
     <section className="profile-detail" role="dialog" aria-modal="true" aria-labelledby="profile-detail-title" onMouseDown={(event) => event.stopPropagation()}>
       <header className="profile-detail-header">
@@ -222,7 +257,7 @@ function ProfileDetails({ character, onClose, onSync, syncing }: { character: Tr
         </article>)}</div> : <p className="profile-empty">Sync the profile to retrieve equipment.</p>}
       </section>
       <section className="profile-detail-section"><div className="section-heading"><div><p className="eyebrow">Active loadout</p><h3>Talents</h3></div><span>{active?.selected_hero_talent_tree?.name ?? character.specializations?.active_hero_talent_tree?.name ?? ""}</span></div>
-        {active ? <><div className="talent-groups">{talentGroups.map((group) => <div key={group.title}><h4>{group.title}</h4><div className="talent-tree">{group.values.map((talent, index) => <div className="talent-node" title={`${talentName(talent)}${talent.tooltip?.spell_tooltip?.description ? `\n${talent.tooltip.spell_tooltip.description}` : ""}`} key={`${talent.id}-${index}`}><BattleNetIcon type="spell" id={talentSpellId(talent)} name={talentName(talent)} region={character.region} size={40} /><small>{talentName(talent)}</small>{(talent.rank ?? 1) > 1 && <b>{talent.rank}</b>}</div>)}</div></div>)}</div>
+        {active ? <>{treeData ? <div className="wow-trees"><WowTalentTree title={active.selected_class_talent_tree?.name ?? "Class tree"} nodes={treeData.class_talent_nodes ?? []} selected={active.selected_class_talents ?? []} region={character.region} /><WowTalentTree title={active.selected_spec_talent_tree?.name ?? "Specialization tree"} nodes={treeData.spec_talent_nodes ?? []} selected={active.selected_spec_talents ?? []} region={character.region} /><WowTalentTree title={active.selected_hero_talent_tree?.name ?? "Hero tree"} nodes={treeData.hero_talent_trees?.find((tree) => tree.id === active.selected_hero_talent_tree?.id)?.hero_talent_nodes ?? []} selected={active.selected_hero_talents ?? []} region={character.region} /></div> : treeError ? <p className="profile-empty">Could not load the talent-tree layout: {treeError}</p> : <p className="profile-empty">Loading talent-tree layout…</p>}
           <div className="pvp-talents"><h4>PvP talents</h4>{(activeSpecialization?.pvp_talent_slots ?? []).map((slot, index) => <span title={slot.selected?.spell_tooltip?.description} key={slot.slot_number ?? index}><BattleNetIcon type="spell" id={slot.selected?.spell_tooltip?.spell?.id} name={slot.selected?.talent?.name} region={character.region} size={32} />{slot.selected?.talent?.name ?? slot.selected?.spell_tooltip?.spell?.name ?? "Empty slot"}</span>)}</div>
           {active.talent_loadout_code && <details className="loadout-code"><summary>Talent loadout code</summary><code>{active.talent_loadout_code}</code></details>}
         </> : <p className="profile-empty">Sync the profile to retrieve talents.</p>}
@@ -429,6 +464,7 @@ function App() {
   const [profileBusy, setProfileBusy] = useState<number | "new" | null>(null);
   const [battleNetConfigured, setBattleNetConfigured] = useState(false);
   const [selectedCharacter, setSelectedCharacter] = useState<TrackedCharacter | null>(null);
+  const [charactersOpen, setCharactersOpen] = useState(false);
 
   const loadMatches = useCallback(async () => {
     setError(null);
@@ -610,6 +646,9 @@ function App() {
         </a>
         <div className="topbar-actions">
           <span className="status"><i aria-hidden="true" /> Local backend</span>
+          <button className={`characters-button ${charactersOpen ? "active" : ""}`} onClick={() => setCharactersOpen((open) => !open)} aria-expanded={charactersOpen} aria-controls="tracked-characters">
+            Characters <span>{characters.length}</span>
+          </button>
           <button className="shutdown-button" onClick={shutDownApplication} disabled={shuttingDown}>
             {shuttingDown ? "Shutting down…" : "Shut down"}
           </button>
@@ -631,7 +670,7 @@ function App() {
 
       {(notice || error) && <div className={`message ${error ? "error" : "success"}`} role="status">{error ?? notice}</div>}
 
-      <section className="profiles-panel">
+      {charactersOpen && <section className="profiles-panel" id="tracked-characters">
         <div className="section-heading">
           <div><p className="eyebrow">Battle.net profiles</p><h2>Tracked characters</h2></div>
           <span>{battleNetConfigured ? "Sync enabled" : "Add API credentials to sync"}</span>
@@ -649,7 +688,7 @@ function App() {
           <label><span>Region</span><select value={profileRegion} onChange={(event) => setProfileRegion(event.target.value)}><option value="eu">EU</option><option value="us">US</option><option value="kr">KR</option><option value="tw">TW</option></select></label>
           <button className="secondary-button" disabled={profileBusy !== null}>{profileBusy === "new" ? "Adding…" : "Add profile"}</button>
         </form>
-      </section>
+      </section>}
 
       <section className="rating-modes" aria-label="Rating history">
         {(["2v2", "3v3", "solo-shuffle"] as MatchCategory[]).map((category) => {

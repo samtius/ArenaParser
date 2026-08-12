@@ -55,6 +55,12 @@ public class BattleNetCharacterClient {
         throw new IllegalStateException("Battle.net did not return an icon");
     }
 
+    public JsonNode talentTree(String region, long treeId, long specializationId) throws Exception {
+        return get("https://" + region + ".api.blizzard.com/data/wow/talent-tree/" + treeId
+                + "/playable-specialization/" + specializationId + "?namespace=static-" + region
+                + "&locale=" + locale(region), accessToken());
+    }
+
     private synchronized String accessToken() throws Exception {
         if (cachedToken != null && Instant.now().isBefore(tokenExpiresAt)) return cachedToken;
         var basic = Base64.getEncoder().encodeToString((clientId + ":" + clientSecret).getBytes(StandardCharsets.UTF_8));
