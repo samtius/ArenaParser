@@ -197,6 +197,22 @@ button:disabled { opacity: .6; cursor: wait; }
 .death-recap .damage-bar .recap-values > strong { color: #ff8585; }
 .death-recap .healing-bar .recap-values > strong { color: #68dca3; }
 .spell-icon { display: block; flex: 0 0 auto; border: 1px solid #555d69; border-radius: 5px; background: #090b0e; object-fit: cover; }
+.profiles-panel { margin-bottom: 28px; padding: 24px; border: 1px solid #292f39; border-radius: 14px; background: #11151b; }
+.profile-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(290px, 1fr)); gap: 12px; }
+.profile-card { min-height: 92px; padding: 14px; display: grid; grid-template-columns: 52px 1fr auto; gap: 12px; align-items: center; border: 1px solid #2a313c; border-radius: 10px; background: #151a21; }
+.profile-card img, .profile-avatar { width: 52px; height: 52px; border: 1px solid #475160; border-radius: 8px; object-fit: cover; }
+.profile-avatar { display: grid; place-items: center; color: #b9aeff; background: #26213f; font-weight: 800; }
+.profile-card > div:nth-child(2) { min-width: 0; display: grid; gap: 2px; }
+.profile-card strong { color: #f1f2f5; }
+.profile-card small { color: #7d8795; text-transform: capitalize; }
+.profile-card p { margin: 4px 0 0; color: #b7bec8; font-size: 12px; }
+.profile-card em { color: #d69a79; font-size: 10px; font-style: normal; }
+.profile-actions { display: flex; gap: 6px; }
+.profile-actions button { padding: 7px 9px; border: 1px solid #39424f; border-radius: 6px; color: #bfc6d0; background: #1a2029; cursor: pointer; }
+.profile-actions button:disabled { opacity: .45; cursor: default; }
+.profile-form { margin-top: 14px; display: grid; grid-template-columns: 1fr 1.4fr 90px auto; gap: 10px; align-items: end; }
+.profile-form label { display: grid; gap: 5px; color: #808997; font-size: 10px; font-weight: 700; text-transform: uppercase; }
+.profile-form input, .profile-form select { height: 38px; padding: 0 10px; border: 1px solid #333b47; border-radius: 7px; color: #e4e6ea; background: #0d1116; }
 .timeline-panel { margin: 20px 28px 0; padding: 18px; border: 1px solid #2b313c; border-radius: 12px; background: #13171e; }
 .timeline-heading { display: flex; justify-content: space-between; align-items: center; gap: 16px; }
 .timeline-heading .eyebrow { margin: 0 0 4px; font-size: 9px; }
@@ -228,6 +244,7 @@ button:disabled { opacity: .6; cursor: wait; }
   .stats-grid { grid-template-columns: 1fr; }
   .rating-modes { grid-template-columns: 1fr; }
   .match-filters { grid-template-columns: 1fr; }
+  .profile-form { grid-template-columns: 1fr; }
   .match-filters p { grid-column: 1; }
   .category-nav { position: static; grid-template-columns: repeat(2, 1fr); }
   .category-nav a:first-child { grid-column: 1 / -1; }

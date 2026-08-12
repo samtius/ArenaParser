@@ -5,8 +5,8 @@ import java.util.Set;
 import java.util.stream.Collectors;
 
 /** Midnight 12.1 player-spell flags, generated from the client DB2 spell attributes. */
-final class ImportantSpellCatalog {
-    static final String VERSION = "12.1";
+public final class ImportantSpellCatalog {
+    public static final String VERSION = "Midnight 12.1";
 
     private static final Set<Long> IMPORTANT = ids("1022,102342,102543,102558,102560,1044,104773,106951,107574,108271,108280,109304,110909,114051,114052,115203,115310,116849,118,118038,120954,121471,1214780,1216848,1217605,1217989,1219480,1227373,1229474,1229510,1230289,1230302,1231871,1232221,1232760,1233398,1236574,1238147,1238158,1238294,1238392,1239874,1243852,1243854,1245752,1246541,1246664,1246918,1246965,12472,1249017,1249265,1249639,1249796,1250646,1251331,1251361,1251390,1251392,1251583,1251703,1251789,1252204,1252436,1252952,1254088,1254294,1255156,1255377,1255743,1256008,1256027,1256093,1256174,1256276,1256358,1256388,1256533,1257126,1257984,1258514,1258681,1258810,1258811,1258997,1260197,1260742,1260831,1261287,1261329,1261559,1261704,1261758,1262075,1262250,1262523,1262525,1262526,1262776,1263292,1263601,1263741,1263775,1263970,1264106,1264114,1264693,1266104,1267274,1270189,1270250,1270294,1270766,1270852,1271074,1271385,1271479,1271678,1272265,1275056,1275059,1277341,1278156,1278893,1280088,1280958,1282138,1282249,1282415,1282416,1282665,1282722,1284095,1284932,1284934,1285978,1286142,1286143,1286276,1293726,1294563,1295237,1295243,132578,134536,134789,13750,137639,141396,141401,141558,142756,142777,142778,142779,142780,142795,152953,184364,185422,186265,187827,190319,191427,192249,19236,194223,194249,198067,198144,198589,199448,204018,204021,205180,207771,212295,212800,216331,22812,228260,231895,237945,237947,237952,242733,243435,248831,264735,265187,266779,275699,288613,297850,305395,31224,31850,31884,323538,326450,33206,335235,342246,350101,350922,351119,355057,355139,355934,356407,357170,357260,357404,358131,359844,360194,360952,361175,363916,365350,365362,367679,375087,377362,377572,378441,378464,383410,387278,388392,388615,388862,389539,389654,389660,389722,390414,391109,395267,403876,408558,410358,414658,414944,423051,424419,424773,427356,432967,433841,434802,442210,443069,444743,446657,448248,449734,451026,452099,454351,454373,45438,461796,462508,466772,468966,472736,473663,473794,47585,47788,48707,48792,49028,498,50322,50334,51271,51533,5277,53480,55233,55342,642,64843,6940,79140,81549,8178,86659,871");
     private static final Set<Long> DEFENSIVE = ids("498,642,871,1022,6940,19236,22812,31224,31850,33206,45438,47585,47788,48707,48792,50322,53480,55233,81549,86659,102342,104773,108271,115203,116849,118038,120954,184364,186265,199448,204018,207771,212800,243435,264735,342246,357170,363916,414658");
@@ -39,19 +39,19 @@ final class ImportantSpellCatalog {
 
     private ImportantSpellCatalog() { }
 
-    static boolean isImportant(long spellId) {
+    public static boolean isImportant(long spellId) {
         if (spellId == 157128) return false; // Saved by the Light is a frequent passive proc, not a useful timeline cooldown.
         return spellId == 1249625 || isGladiatorsMedallion(spellId) || IMPORTANT.contains(spellId) || PVP_DEFENSIVE.contains(spellId) || CROWD_CONTROL.contains(spellId);
     }
-    static boolean isImportant(long spellId, String spellName) {
+    public static boolean isImportant(long spellId, String spellName) {
         return isImportant(spellId) || DEFENSIVE_NAMES.contains(spellName) || OFFENSIVE_NAMES.contains(spellName) || CROWD_CONTROL_NAMES.contains(spellName);
     }
-    static String category(long spellId) {
+    public static String category(long spellId) {
         if (isGladiatorsMedallion(spellId) || DEFENSIVE.contains(spellId) || PVP_DEFENSIVE.contains(spellId)) return "DEFENSIVE";
         if (CROWD_CONTROL.contains(spellId)) return "CROWD_CONTROL";
         return "OFFENSIVE";
     }
-    static String category(long spellId, String spellName) {
+    public static String category(long spellId, String spellName) {
         if (DEFENSIVE_NAMES.contains(spellName)) return "DEFENSIVE";
         if (CROWD_CONTROL_NAMES.contains(spellName)) return "CROWD_CONTROL";
         if (OFFENSIVE_NAMES.contains(spellName)) return "OFFENSIVE";
@@ -61,6 +61,16 @@ final class ImportantSpellCatalog {
     private static boolean isGladiatorsMedallion(long spellId) {
         return spellId == 336126 || spellId == 208683 || spellId == 42292;
     }
+
+    public static java.util.List<CatalogSpell> namedSpells() {
+        var spells = new java.util.ArrayList<CatalogSpell>();
+        DEFENSIVE_NAMES.forEach(name -> spells.add(new CatalogSpell(name, "DEFENSIVE")));
+        OFFENSIVE_NAMES.forEach(name -> spells.add(new CatalogSpell(name, "OFFENSIVE")));
+        CROWD_CONTROL_NAMES.forEach(name -> spells.add(new CatalogSpell(name, "CROWD_CONTROL")));
+        return spells.stream().sorted(java.util.Comparator.comparing(CatalogSpell::category).thenComparing(CatalogSpell::name)).toList();
+    }
+
+    public record CatalogSpell(String name, String category) { }
 
     private static Set<Long> ids(String values) {
         return Arrays.stream(values.split(",")).map(Long::parseLong).collect(Collectors.toUnmodifiableSet());

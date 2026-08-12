@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type CSSProperties } from "react";
+import { useCallback, useEffect, useMemo, useState, type CSSProperties, type FormEvent } from "react";
 
 type MatchResult = "WIN" | "LOSS" | "DRAW" | "UNKNOWN";
 
@@ -26,6 +26,12 @@ interface ImportResponse {
   detectedMatches: number;
   importedMatches: number;
   skippedMatches: number;
+}
+
+interface TrackedCharacter {
+  id: number; name: string; realmSlug: string; region: string; characterClass: string | null;
+  activeSpecialization: string | null; level: number | null; itemLevel: number | null;
+  achievementPoints: number | null; avatarUrl: string | null; lastSyncedAt: string | null; syncError: string | null;
 }
 
 interface SpellStatistic {
@@ -344,6 +350,12 @@ function App() {
   const [opponentFilter, setOpponentFilter] = useState("");
   const [visibleMatches, setVisibleMatches] = useState(8);
   const [visibleByCategory, setVisibleByCategory] = useState<Record<MatchCategory, number>>({ "solo-shuffle": 5, "2v2": 5, "3v3": 5, skirmish: 5 });
+  const [characters, setCharacters] = useState<TrackedCharacter[]>([]);
+  const [profileName, setProfileName] = useState("");
+  const [profileRealm, setProfileRealm] = useState("Defias Brotherhood");
+  const [profileRegion, setProfileRegion] = useState("eu");
+  const [profileBusy, setProfileBusy] = useState<number | "new" | null>(null);
+  const [battleNetConfigured, setBattleNetConfigured] = useState(false);
 
   const loadMatches = useCallback(async () => {
     setError(null);
@@ -365,6 +377,43 @@ function App() {
   useEffect(() => {
     void loadMatches();
   }, [loadMatches]);
+
+  const loadCharacters = useCallback(async () => {
+    try {
+      const [profilesResponse, statusResponse] = await Promise.all([fetch("/api/characters"), fetch("/api/characters/status")]);
+      if (profilesResponse.ok) setCharacters(await profilesResponse.json() as TrackedCharacter[]);
+      if (statusResponse.ok) setBattleNetConfigured((await statusResponse.json() as { battleNetConfigured: boolean }).battleNetConfigured);
+    } catch { /* Match history remains usable while profile sync is unavailable. */ }
+  }, []);
+
+  useEffect(() => { void loadCharacters(); }, [loadCharacters]);
+
+  async function addCharacter(event: FormEvent) {
+    event.preventDefault();
+    setProfileBusy("new"); setError(null);
+    try {
+      const response = await fetch("/api/characters", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: profileName, realm: profileRealm, region: profileRegion }) });
+      if (!response.ok) throw new Error(`Could not add profile (${response.status})`);
+      setProfileName(""); await loadCharacters();
+    } catch (requestError) { setError(requestError instanceof Error ? requestError.message : "Could not add profile"); }
+    finally { setProfileBusy(null); }
+  }
+
+  async function refreshCharacter(id: number) {
+    setProfileBusy(id); setError(null);
+    try {
+      const response = await fetch(`/api/characters/${id}/refresh`, { method: "POST" });
+      if (!response.ok) throw new Error(`Could not sync profile (${response.status})`);
+      await loadCharacters();
+    } catch (requestError) { setError(requestError instanceof Error ? requestError.message : "Could not sync profile"); }
+    finally { setProfileBusy(null); }
+  }
+
+  async function removeCharacter(id: number) {
+    if (!window.confirm("Stop tracking this character?")) return;
+    await fetch(`/api/characters/${id}`, { method: "DELETE" });
+    await loadCharacters();
+  }
 
   useEffect(() => {
     const handlePopState = () => {
@@ -506,6 +555,26 @@ function App() {
       </section>
 
       {(notice || error) && <div className={`message ${error ? "error" : "success"}`} role="status">{error ?? notice}</div>}
+
+      <section className="profiles-panel">
+        <div className="section-heading">
+          <div><p className="eyebrow">Battle.net profiles</p><h2>Tracked characters</h2></div>
+          <span>{battleNetConfigured ? "Sync enabled" : "Add API credentials to sync"}</span>
+        </div>
+        <div className="profile-grid">
+          {characters.map((character) => <article className="profile-card" key={character.id}>
+            {character.avatarUrl ? <img src={character.avatarUrl} alt="" /> : <span className="profile-avatar">{character.name.slice(0, 2).toUpperCase()}</span>}
+            <div><strong>{character.name}</strong><small>{character.realmSlug} · {character.region.toUpperCase()}</small><p>{[character.activeSpecialization, character.characterClass].filter(Boolean).join(" ") || "Profile not synced"}{character.itemLevel ? ` · ${character.itemLevel} ilvl` : ""}</p>{character.syncError && <em>{character.syncError}</em>}</div>
+            <div className="profile-actions"><button onClick={() => void refreshCharacter(character.id)} disabled={profileBusy !== null || !battleNetConfigured}>{profileBusy === character.id ? "Syncing…" : "Sync"}</button><button onClick={() => void removeCharacter(character.id)} aria-label={`Remove ${character.name}`}>×</button></div>
+          </article>)}
+        </div>
+        <form className="profile-form" onSubmit={addCharacter}>
+          <label><span>Character</span><input required value={profileName} onChange={(event) => setProfileName(event.target.value)} placeholder="Character name" /></label>
+          <label><span>Realm</span><input required value={profileRealm} onChange={(event) => setProfileRealm(event.target.value)} /></label>
+          <label><span>Region</span><select value={profileRegion} onChange={(event) => setProfileRegion(event.target.value)}><option value="eu">EU</option><option value="us">US</option><option value="kr">KR</option><option value="tw">TW</option></select></label>
+          <button className="secondary-button" disabled={profileBusy !== null}>{profileBusy === "new" ? "Adding…" : "Add profile"}</button>
+        </form>
+      </section>
 
       <section className="rating-modes" aria-label="Rating history">
         {(["2v2", "3v3", "solo-shuffle"] as MatchCategory[]).map((category) => {

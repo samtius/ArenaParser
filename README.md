@@ -26,6 +26,8 @@ The backend is Java 21 with Spring Boot, Spring Web and Spring Data JPA.
 - `CombatLogParser` parses individual combat-log lines and damage events.
 - `ArenaMatchDetector` identifies completed matches and builds participants, rounds, spell statistics, utility events, death recaps and timelines.
 - `ImportantSpellCatalog` determines which Midnight offensive, defensive and crowd-control abilities appear in timelines.
+- The versioned spell catalog is exposed through `/api/spells`, keeping timeline classification in the backend.
+- The tracked-character service stores selected profiles and can enrich them with Battle.net profile, specialization, equipment and avatar data.
 - `AutomaticCombatLogImportService` checks for log changes and imports only completed matches.
 - `ArenaMatchService` persists matches and their detailed JSON payload.
 - Controllers under `src/main/java/com/samtius/arenaparser/controller` expose the REST API.
@@ -115,9 +117,26 @@ ARENAPARSER_COMBAT_LOG_PATH=C:/Program Files (x86)/World of Warcraft/_retail_/Lo
 ARENAPARSER_COMBAT_LOG_ZONE=Europe/Stockholm
 ARENAPARSER_AUTO_IMPORT_ENABLED=true
 ARENAPARSER_AUTO_IMPORT_INTERVAL_MS=5000
+
+# Optional Battle.net profile sync
+BATTLENET_CLIENT_ID=
+BATTLENET_CLIENT_SECRET=
 ```
 
 `.env` is intentionally ignored by Git. Never commit real database passwords or machine-specific paths. When a new setting is introduced, add a safe example to `.env.example` as well.
+
+### Optional Battle.net profile sync
+
+ArenaParser starts with Watur and Shadowfiend on Defias Brotherhood in its tracked-character list. Additional characters can be added manually in the dashboard. Profiles remain stored locally when Battle.net integration is disabled.
+
+To enable the **Sync** buttons, create a Battle.net API client at the [Battle.net Developer Portal](https://develop.battle.net/access/clients), then add its credentials to the local `.env` file:
+
+```dotenv
+BATTLENET_CLIENT_ID=your-local-client-id
+BATTLENET_CLIENT_SECRET=your-local-client-secret
+```
+
+Restart ArenaParser after changing `.env`. The secret is read only by Spring Boot and must never be committed or exposed to the frontend. Synced data is a timestamped profile snapshot; it does not prove which equipment or talents a character used in an older arena match.
 
 ### 3. Install frontend packages
 
@@ -319,6 +338,12 @@ Generated output (`target/`, `frontend/dist/`, `node_modules/`, TypeScript build
 | `GET` | `/api/matches` | Basic stored matches |
 | `GET` | `/api/matches/summaries` | Matches with team compositions and rating metadata |
 | `GET` | `/api/matches/{id}/details` | Full parsed report for one match |
+| `GET` | `/api/characters` | Manually tracked character profiles |
+| `POST` | `/api/characters` | Add a region, realm and character name |
+| `POST` | `/api/characters/{id}/refresh` | Refresh one profile from Battle.net |
+| `DELETE` | `/api/characters/{id}` | Stop tracking a profile |
+| `GET` | `/api/spells` | Current versioned important-spell catalog |
+| `GET` | `/api/spells/resolve` | Classify a spell for the timeline |
 | `POST` | `/api/combat-log/import-arena-matches` | Import completed matches from the newest log |
 | `POST` | `/api/application/shutdown` | Shut down the local application from the browser |
 
