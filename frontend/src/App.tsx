@@ -32,7 +32,26 @@ interface TrackedCharacter {
   id: number; name: string; realmSlug: string; region: string; characterClass: string | null;
   activeSpecialization: string | null; level: number | null; itemLevel: number | null;
   achievementPoints: number | null; avatarUrl: string | null; lastSyncedAt: string | null; syncError: string | null;
+  equipment?: CharacterEquipment | null; specializations?: CharacterSpecializations | null;
 }
+
+interface EquipmentItem {
+  item?: { id: number }; media?: { id: number }; slot?: { type: string; name: string }; name?: string; quality?: { type: string; name: string };
+  level?: { value: number; display_string: string }; stats?: Array<{ type?: { name: string }; value?: number; display?: { display_string: string } }>;
+  enchantments?: Array<{ display_string?: string; enchantment_id?: number }>;
+  sockets?: Array<{ socket_type?: { name: string }; item?: { id: number; name: string }; display_string?: string }>;
+  set?: { item_set?: { name?: string } };
+}
+interface CharacterEquipment { equipped_items?: EquipmentItem[]; }
+interface TalentChoice { id?: number; rank?: number; tooltip?: { talent?: { name?: string; id?: number }; spell_tooltip?: { spell?: { name?: string; id?: number }; description?: string } }; }
+interface PvpTalentSlot { slot_number?: number; selected?: { talent?: { name?: string; id?: number }; spell_tooltip?: { spell?: { name?: string; id?: number }; description?: string } }; }
+interface TalentLoadout {
+  is_active?: boolean; talent_loadout_code?: string;
+  selected_class_talents?: TalentChoice[]; selected_spec_talents?: TalentChoice[]; selected_hero_talents?: TalentChoice[];
+  selected_hero_talent_tree?: { name?: string };
+}
+interface SpecializationLoadout { specialization?: { name?: string; id?: number }; pvp_talent_slots?: PvpTalentSlot[]; loadouts?: TalentLoadout[]; }
+interface CharacterSpecializations { specializations?: SpecializationLoadout[]; active_specialization?: { name?: string }; active_hero_talent_tree?: { name?: string }; }
 
 interface SpellStatistic {
   spellId: number; name: string; damage: number; healing: number; absorbs: number; damageTaken: number;
@@ -157,6 +176,59 @@ function healthBarStyle(healthAfter: number, maxHealth: number): CSSProperties {
 function SpellIcon({ spellId, name, size = 28, showTitle = true }: { spellId: number; name?: string | null; size?: number; showTitle?: boolean }) {
   const resolvedId = spellId > 0 ? spellId : 6603;
   return <img className="spell-icon" src={`https://images.wowarenalogs.com/spells/${resolvedId}.jpg`} width={size} height={size} loading="lazy" alt="" title={showTitle ? name ?? "Unknown spell" : undefined} onError={(event) => { event.currentTarget.src = "https://images.wowarenalogs.com/spells/6603.jpg"; }} />;
+}
+
+function talentName(talent: TalentChoice): string {
+  return talent.tooltip?.talent?.name ?? talent.tooltip?.spell_tooltip?.spell?.name ?? `Talent ${talent.id ?? "unknown"}`;
+}
+
+function talentSpellId(talent: TalentChoice): number {
+  return talent.tooltip?.spell_tooltip?.spell?.id ?? 0;
+}
+
+function BattleNetIcon({ type, id, name, region, size = 38 }: { type: "item" | "spell"; id?: number; name?: string; region: string; size?: number }) {
+  if (!id) return <span className="missing-game-icon" style={{ width: size, height: size }}>?</span>;
+  return <img className="game-icon" src={`/api/media/${type}/${id}?region=${region}`} width={size} height={size} loading="lazy" alt="" title={name} />;
+}
+
+function ProfileDetails({ character, onClose, onSync, syncing }: { character: TrackedCharacter; onClose: () => void; onSync: () => void; syncing: boolean }) {
+  const items = character.equipment?.equipped_items ?? [];
+  const loadouts = character.specializations?.specializations ?? [];
+  const activeSpecialization = loadouts.find((specialization) => specialization.specialization?.name === character.activeSpecialization) ?? loadouts[0];
+  const active = activeSpecialization?.loadouts?.find((loadout) => loadout.is_active) ?? activeSpecialization?.loadouts?.[0];
+  const talentGroups = [
+    { title: "Class talents", values: active?.selected_class_talents ?? [] },
+    { title: "Specialization talents", values: active?.selected_spec_talents ?? [] },
+    { title: "Hero talents", values: active?.selected_hero_talents ?? [] },
+  ];
+  return <div className="modal-backdrop profile-modal-backdrop" role="presentation" onMouseDown={onClose}>
+    <section className="profile-detail" role="dialog" aria-modal="true" aria-labelledby="profile-detail-title" onMouseDown={(event) => event.stopPropagation()}>
+      <header className="profile-detail-header">
+        {character.avatarUrl ? <img src={character.avatarUrl} alt="" /> : <span className="profile-avatar large">{character.name.slice(0, 2).toUpperCase()}</span>}
+        <div><p className="eyebrow">{character.region.toUpperCase()} · {character.realmSlug}</p><h2 id="profile-detail-title">{character.name}</h2><p>{[character.activeSpecialization, character.characterClass].filter(Boolean).join(" ") || "Profile not synced"}</p></div>
+        <button className="secondary-button" onClick={onSync} disabled={syncing}>{syncing ? "Syncing…" : "Sync profile"}</button>
+        <button className="close-button" onClick={onClose} aria-label="Close profile">×</button>
+      </header>
+      <div className="profile-summary">
+        <div><span>Level</span><strong>{character.level ?? "–"}</strong></div><div><span>Item level</span><strong>{character.itemLevel ?? "–"}</strong></div><div><span>Achievement points</span><strong>{character.achievementPoints?.toLocaleString("en-GB") ?? "–"}</strong></div><div><span>Last synced</span><strong>{character.lastSyncedAt ? formatDate(character.lastSyncedAt) : "Never"}</strong></div>
+      </div>
+      {character.syncError && <div className="message error">{character.syncError}</div>}
+      <section className="profile-detail-section"><div className="section-heading"><div><p className="eyebrow">Current snapshot</p><h3>Equipment</h3></div><span>{items.length} equipped items</span></div>
+        {items.length ? <div className="equipment-grid">{items.map((item, index) => <article className={`equipment-item quality-${(item.quality?.type ?? "common").toLowerCase()}`} key={`${item.slot?.type}-${item.item?.id}-${index}`}>
+          <BattleNetIcon type="item" id={item.media?.id ?? item.item?.id} name={item.name} region={character.region} size={42} /><span className="item-slot">{item.slot?.name ?? "Item"}</span><strong>{item.name ?? `Item ${item.item?.id ?? ""}`}</strong><small>{item.level?.display_string ?? "Unknown item level"}</small>
+          {(item.stats?.length ?? 0) > 0 && <p>{item.stats?.map((stat) => stat.display?.display_string ?? `${stat.value ?? ""} ${stat.type?.name ?? ""}`).join(" · ")}</p>}
+          {item.enchantments?.map((enchant, enchantIndex) => <em key={enchant.enchantment_id ?? enchantIndex}>{enchant.display_string ?? "Enchanted"}</em>)}
+          {item.sockets?.map((socket, socketIndex) => <em key={socket.item?.id ?? socketIndex}>{socket.item?.name ?? socket.display_string ?? socket.socket_type?.name}</em>)}
+        </article>)}</div> : <p className="profile-empty">Sync the profile to retrieve equipment.</p>}
+      </section>
+      <section className="profile-detail-section"><div className="section-heading"><div><p className="eyebrow">Active loadout</p><h3>Talents</h3></div><span>{active?.selected_hero_talent_tree?.name ?? character.specializations?.active_hero_talent_tree?.name ?? ""}</span></div>
+        {active ? <><div className="talent-groups">{talentGroups.map((group) => <div key={group.title}><h4>{group.title}</h4><div className="talent-tree">{group.values.map((talent, index) => <div className="talent-node" title={`${talentName(talent)}${talent.tooltip?.spell_tooltip?.description ? `\n${talent.tooltip.spell_tooltip.description}` : ""}`} key={`${talent.id}-${index}`}><BattleNetIcon type="spell" id={talentSpellId(talent)} name={talentName(talent)} region={character.region} size={40} /><small>{talentName(talent)}</small>{(talent.rank ?? 1) > 1 && <b>{talent.rank}</b>}</div>)}</div></div>)}</div>
+          <div className="pvp-talents"><h4>PvP talents</h4>{(activeSpecialization?.pvp_talent_slots ?? []).map((slot, index) => <span title={slot.selected?.spell_tooltip?.description} key={slot.slot_number ?? index}><BattleNetIcon type="spell" id={slot.selected?.spell_tooltip?.spell?.id} name={slot.selected?.talent?.name} region={character.region} size={32} />{slot.selected?.talent?.name ?? slot.selected?.spell_tooltip?.spell?.name ?? "Empty slot"}</span>)}</div>
+          {active.talent_loadout_code && <details className="loadout-code"><summary>Talent loadout code</summary><code>{active.talent_loadout_code}</code></details>}
+        </> : <p className="profile-empty">Sync the profile to retrieve talents.</p>}
+      </section>
+    </section>
+  </div>;
 }
 
 function MatchList({ matches, emptyMessage, onSelect }: { matches: ArenaMatch[]; emptyMessage: string; onSelect: (match: ArenaMatch) => void }) {
@@ -356,6 +428,7 @@ function App() {
   const [profileRegion, setProfileRegion] = useState("eu");
   const [profileBusy, setProfileBusy] = useState<number | "new" | null>(null);
   const [battleNetConfigured, setBattleNetConfigured] = useState(false);
+  const [selectedCharacter, setSelectedCharacter] = useState<TrackedCharacter | null>(null);
 
   const loadMatches = useCallback(async () => {
     setError(null);
@@ -404,6 +477,8 @@ function App() {
     try {
       const response = await fetch(`/api/characters/${id}/refresh`, { method: "POST" });
       if (!response.ok) throw new Error(`Could not sync profile (${response.status})`);
+      const updated = await response.json() as TrackedCharacter;
+      setSelectedCharacter((current) => current?.id === id ? updated : current);
       await loadCharacters();
     } catch (requestError) { setError(requestError instanceof Error ? requestError.message : "Could not sync profile"); }
     finally { setProfileBusy(null); }
@@ -562,10 +637,10 @@ function App() {
           <span>{battleNetConfigured ? "Sync enabled" : "Add API credentials to sync"}</span>
         </div>
         <div className="profile-grid">
-          {characters.map((character) => <article className="profile-card" key={character.id}>
+          {characters.map((character) => <article className="profile-card clickable" key={character.id} role="button" tabIndex={0} onClick={() => setSelectedCharacter(character)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") setSelectedCharacter(character); }}>
             {character.avatarUrl ? <img src={character.avatarUrl} alt="" /> : <span className="profile-avatar">{character.name.slice(0, 2).toUpperCase()}</span>}
             <div><strong>{character.name}</strong><small>{character.realmSlug} · {character.region.toUpperCase()}</small><p>{[character.activeSpecialization, character.characterClass].filter(Boolean).join(" ") || "Profile not synced"}{character.itemLevel ? ` · ${character.itemLevel} ilvl` : ""}</p>{character.syncError && <em>{character.syncError}</em>}</div>
-            <div className="profile-actions"><button onClick={() => void refreshCharacter(character.id)} disabled={profileBusy !== null || !battleNetConfigured}>{profileBusy === character.id ? "Syncing…" : "Sync"}</button><button onClick={() => void removeCharacter(character.id)} aria-label={`Remove ${character.name}`}>×</button></div>
+            <div className="profile-actions"><button onClick={(event) => { event.stopPropagation(); void refreshCharacter(character.id); }} disabled={profileBusy !== null || !battleNetConfigured}>{profileBusy === character.id ? "Syncing…" : "Sync"}</button><button onClick={(event) => { event.stopPropagation(); void removeCharacter(character.id); }} aria-label={`Remove ${character.name}`}>×</button></div>
           </article>)}
         </div>
         <form className="profile-form" onSubmit={addCharacter}>
@@ -690,6 +765,7 @@ function App() {
           </section>
         </div>
       )}
+      {selectedCharacter && <ProfileDetails character={selectedCharacter} onClose={() => setSelectedCharacter(null)} onSync={() => void refreshCharacter(selectedCharacter.id)} syncing={profileBusy === selectedCharacter.id} />}
     </main>
   );
 }

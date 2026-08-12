@@ -43,6 +43,7 @@ It provides:
 - recent matches grouped by arena format;
 - search and composition filters for your team and the opposing team;
 - team composition summaries before opening a match;
+- manually tracked Battle.net profiles with equipment and active talent details;
 - match and per-player spell timelines;
 - damage, healing, damage-taken, dispel and interrupt breakdowns;
 - death recaps;
@@ -129,14 +130,29 @@ BATTLENET_CLIENT_SECRET=
 
 ArenaParser starts with Watur and Shadowfiend on Defias Brotherhood in its tracked-character list. Additional characters can be added manually in the dashboard. Profiles remain stored locally when Battle.net integration is disabled.
 
-To enable the **Sync** buttons, create a Battle.net API client at the [Battle.net Developer Portal](https://develop.battle.net/access/clients), then add its credentials to the local `.env` file:
+To enable the **Sync** buttons on another computer:
+
+1. Sign in to the [Battle.net Developer Portal](https://develop.battle.net/access/clients).
+2. Create a separate API client for that developer or local installation. Do not share one developer's client secret through Git, chat or documentation.
+3. Use `ArenaParser` as the client name.
+4. Use `https://github.com/samtius/ArenaParser` as the service URL.
+5. A redirect URI is not required. ArenaParser uses the OAuth2 **client credentials** flow for public character data, not an authorization-code login flow. Leave it empty if the portal permits it.
+6. A suitable intended-use description is:
+
+   ```text
+   ArenaParser is a local, open-source World of Warcraft arena analysis application. It calls the Battle.net Profile and Game Data APIs from a local Spring Boot backend to retrieve public profile, specialization, equipment, talent, character-media, item-media and spell-media data for individual characters manually selected by the user. API credentials remain in the user's local environment file and are never exposed to the frontend or committed to the repository.
+   ```
+
+7. Copy `.env.example` to `.env` if the local file does not exist, then add the new client's credentials:
 
 ```dotenv
 BATTLENET_CLIENT_ID=your-local-client-id
 BATTLENET_CLIENT_SECRET=your-local-client-secret
 ```
 
-Restart ArenaParser after changing `.env`. The secret is read only by Spring Boot and must never be committed or exposed to the frontend. Synced data is a timestamped profile snapshot; it does not prove which equipment or talents a character used in an older arena match.
+Restart ArenaParser after changing `.env`; environment values are read only at backend startup. Open the tracked-character section and press **Sync** for each profile. A successful profile view contains an avatar, class, active specialization, level, item level, equipment, gems, enchants and the active class, specialization, hero and PvP talents. Item and spell icons are resolved through the local backend and cached in memory.
+
+The client secret is read only by Spring Boot and must never be committed or exposed to the frontend. `.env` is already ignored by Git. Synced data is a timestamped public-profile snapshot; it does not prove which equipment or talents a character used in an older arena match. The current integration does not request access to a user's private Battle.net account data.
 
 ### 3. Install frontend packages
 
@@ -344,6 +360,7 @@ Generated output (`target/`, `frontend/dist/`, `node_modules/`, TypeScript build
 | `DELETE` | `/api/characters/{id}` | Stop tracking a profile |
 | `GET` | `/api/spells` | Current versioned important-spell catalog |
 | `GET` | `/api/spells/resolve` | Classify a spell for the timeline |
+| `GET` | `/api/media/{type}/{id}` | Resolve and cache a Battle.net item or spell icon |
 | `POST` | `/api/combat-log/import-arena-matches` | Import completed matches from the newest log |
 | `POST` | `/api/application/shutdown` | Shut down the local application from the browser |
 
@@ -381,6 +398,14 @@ Use `corepack pnpm` instead of plain `pnpm`. Run `corepack enable` once from an 
 ### The combat log cannot be found
 
 Check `ARENAPARSER_COMBAT_LOG_PATH` in `.env`. It should point to the Retail `Logs` directory and that directory must contain a `WoWCombatLog*.txt` file.
+
+### Battle.net Sync is disabled
+
+Confirm that both `BATTLENET_CLIENT_ID` and `BATTLENET_CLIENT_SECRET` contain values in the local `.env` file, without spaces around `=`. Fully stop and restart ArenaParser after editing the file. Check `http://127.0.0.1:8080/api/characters/status`; `battleNetConfigured` should be `true`.
+
+### A Battle.net profile or icon cannot be loaded
+
+Confirm the character's region, realm slug and name. Battle.net profile snapshots commonly update after the character logs out of WoW. A `401` indicates invalid API credentials; create or copy the local API client values again. A `404` usually means that the character or requested media record was not found. Do not put the client secret in a browser URL or frontend environment variable.
 
 ### A port is already in use
 

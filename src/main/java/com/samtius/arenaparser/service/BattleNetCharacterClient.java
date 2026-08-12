@@ -11,6 +11,7 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.Base64;
 
 @Component
@@ -19,6 +20,8 @@ public class BattleNetCharacterClient {
     private final HttpClient httpClient = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(10)).build();
     private final String clientId;
     private final String clientSecret;
+    private volatile String cachedToken;
+    private volatile Instant tokenExpiresAt = Instant.EPOCH;
 
     public BattleNetCharacterClient(ObjectMapper objectMapper,
             @Value("${arenaparser.battlenet.client-id:}") String clientId,
@@ -44,7 +47,16 @@ public class BattleNetCharacterClient {
         return new CharacterData(profile, equipment, specializations, media);
     }
 
-    private String accessToken() throws Exception {
+    public String mediaUrl(String region, String type, long id) throws Exception {
+        if (!type.equals("item") && !type.equals("spell")) throw new IllegalArgumentException("Unsupported media type");
+        var media = get("https://" + region + ".api.blizzard.com/data/wow/media/" + type + "/" + id
+                + "?namespace=static-" + region + "&locale=" + locale(region), accessToken());
+        for (var asset : media.path("assets")) if ("icon".equals(asset.path("key").asText())) return asset.path("value").asText();
+        throw new IllegalStateException("Battle.net did not return an icon");
+    }
+
+    private synchronized String accessToken() throws Exception {
+        if (cachedToken != null && Instant.now().isBefore(tokenExpiresAt)) return cachedToken;
         var basic = Base64.getEncoder().encodeToString((clientId + ":" + clientSecret).getBytes(StandardCharsets.UTF_8));
         var request = HttpRequest.newBuilder(URI.create("https://oauth.battle.net/token"))
                 .timeout(Duration.ofSeconds(15)).header("Authorization", "Basic " + basic)
@@ -52,7 +64,10 @@ public class BattleNetCharacterClient {
                 .POST(HttpRequest.BodyPublishers.ofString("grant_type=client_credentials")).build();
         var response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
         if (response.statusCode() / 100 != 2) throw new IllegalStateException("Battle.net authentication returned " + response.statusCode());
-        return objectMapper.readTree(response.body()).path("access_token").asText();
+        var tokenResponse = objectMapper.readTree(response.body());
+        cachedToken = tokenResponse.path("access_token").asText();
+        tokenExpiresAt = Instant.now().plusSeconds(Math.max(60, tokenResponse.path("expires_in").asLong(86_400) - 60));
+        return cachedToken;
     }
 
     private JsonNode get(String url, String token) throws Exception {
