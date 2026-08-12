@@ -108,11 +108,17 @@ function timelineTargetsLabel(event: TimelineEvent, relatedEvents: TimelineEvent
 }
 
 function deduplicateTimelineEvents(events: TimelineEvent[]): TimelineEvent[] {
-  return events.filter((event, index) => !events.slice(0, index).some((previous) =>
-    previous.spellId === event.spellId &&
-    previous.source === event.source &&
-    Math.abs(previous.offsetSeconds - event.offsetSeconds) < 0.5
-  ));
+  const groups: TimelineEvent[][] = [];
+  events.forEach((event) => {
+    const group = groups.find((candidates) => {
+      const previous = candidates[0];
+      return previous.source === event.source &&
+        previous.spell.toLowerCase() === event.spell.toLowerCase() &&
+        Math.abs(previous.offsetSeconds - event.offsetSeconds) < 0.5;
+    });
+    if (group) group.push(event); else groups.push([event]);
+  });
+  return groups.map((group) => group.find((event) => event.eventType === "SPELL_CAST_SUCCESS") ?? group[0]);
 }
 
 function resultLabel(match: ArenaMatch): string {
@@ -410,7 +416,7 @@ function PlayerTimeline({ player, events, duration, participants }: { player: Pa
       (event.target === player.name && event.eventType === "SPELL_AURA_APPLIED")
     ));
 
-  return <CooldownTimeline events={personalEvents} relatedEvents={events} duration={duration} playerTeam={player.team} participants={participants} title={`${player.name}'s timeline`} eyebrow="Used and received important spells" />;
+  return <CooldownTimeline events={deduplicateTimelineEvents(personalEvents)} relatedEvents={events} duration={duration} playerTeam={player.team} participants={participants} title={`${player.name}'s timeline`} eyebrow="Used and received important spells" />;
 }
 
 function PlayerCard({ player, timelineOpen, onToggleTimeline }: { player: ParticipantDetails; timelineOpen: boolean; onToggleTimeline: () => void }) {
