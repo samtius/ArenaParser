@@ -15,6 +15,8 @@ public record DetectedArenaMatch(
         MatchResult result,
         MatchCombatDetails combatDetails,
         Integer playerWins,
-        Integer playerLosses
+        Integer playerLosses,
+        Integer playerMmr,
+        Integer opponentMmr
 ) {
 }

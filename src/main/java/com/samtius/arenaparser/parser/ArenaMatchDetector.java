@@ -64,24 +64,28 @@ public class ArenaMatchDetector {
                     activeMatch = nextMatch;
                     accumulator = new MatchAccumulator(activeMatch);
                 } else if ("ARENA_MATCH_END".equals(line.eventType()) && fields.size() > 2 && activeMatch != null) {
+                    var detectedPlayerTeam = accumulator == null || accumulator.playerTeam() == null
+                            ? activeMatch.playerTeam()
+                            : accumulator.playerTeam();
+                    var team0Mmr = fields.size() > 3 ? parseInteger(fields.get(3)) : 0;
+                    var team1Mmr = fields.size() > 4 ? parseInteger(fields.get(4)) : 0;
+                    var playerMmr = detectedPlayerTeam == 1 ? team1Mmr : team0Mmr;
+                    var opponentMmr = detectedPlayerTeam == 1 ? team0Mmr : team1Mmr;
                     if (shuffle != null) {
                         shuffle.addRound(activeMatch, accumulator, line.timestamp());
-                        detectedMatches.add(shuffle.toDetectedMatch(line.timestamp()));
+                        detectedMatches.add(shuffle.toDetectedMatch(line.timestamp(), playerMmr, opponentMmr));
                         shuffle = null;
                         activeMatch = null;
                         accumulator = null;
                         continue;
                     }
                     var winningTeam = parseInteger(fields.get(1));
-                    var detectedPlayerTeam = accumulator == null || accumulator.playerTeam() == null
-                            ? activeMatch.playerTeam()
-                            : accumulator.playerTeam();
                     detectedMatches.add(new DetectedArenaMatch(
                             activeMatch.arena(), activeMatch.instanceId(), activeMatch.matchType(),
                             activeMatch.timestamp(), line.timestamp(), detectedPlayerTeam, winningTeam,
                             parseInteger(fields.get(2)), determineResult(detectedPlayerTeam, winningTeam),
                             accumulator == null ? MatchCombatDetails.empty() : accumulator.toDetails(),
-                            null, null
+                            null, null, playerMmr, opponentMmr
                     ));
                     activeMatch = null;
                     accumulator = null;
@@ -130,18 +134,18 @@ public class ArenaMatchDetector {
             rounds.add(new MatchCombatDetails.RoundDetails(
                     rounds.size() + 1,
                     durationSeconds(round.timestamp(), accumulator.lastDeathTimestamp == null ? boundaryTimestamp : accumulator.lastDeathTimestamp),
-                    playerTeam, winningTeam, result, accumulator.toDetails().participants()
+                    playerTeam, winningTeam, result, accumulator.toDetails().participants(), accumulator.timeline()
             ));
         }
 
-        private DetectedArenaMatch toDetectedMatch(String endTimestamp) {
+        private DetectedArenaMatch toDetectedMatch(String endTimestamp, int playerMmr, int opponentMmr) {
             var wins = (int) rounds.stream().filter(round -> round.result() == MatchResult.WIN).count();
             var losses = rounds.size() - wins;
             var result = wins >= 4 ? MatchResult.WIN : wins == 3 ? MatchResult.DRAW : MatchResult.LOSS;
             return new DetectedArenaMatch(
                     firstRound.arena(), firstRound.instanceId(), firstRound.matchType(), firstRound.timestamp(), endTimestamp,
                     -1, -1, durationSeconds(firstRound.timestamp(), endTimestamp), result,
-                    new MatchCombatDetails(List.of(), List.of(), List.copyOf(rounds)), wins, losses
+                    new MatchCombatDetails(List.of(), List.of(), List.copyOf(rounds), List.of()), wins, losses, playerMmr, opponentMmr
             );
         }
     }
@@ -154,7 +158,10 @@ public class ArenaMatchDetector {
     private static final class MatchAccumulator {
         private final ArenaStart match;
         private final Map<String, ParticipantBuilder> participants = new LinkedHashMap<>();
+        private final Map<String, String> summonedPetOwners = new LinkedHashMap<>();
+        private final Map<String, String> summonedPetNames = new LinkedHashMap<>();
         private final List<MatchCombatDetails.KeyEvent> events = new ArrayList<>();
+        private final List<MatchCombatDetails.TimelineEvent> timeline = new ArrayList<>();
         private String ownPlayerGuid;
         private String lastDeadGuid;
         private String lastDeathTimestamp;
@@ -164,9 +171,14 @@ public class ArenaMatchDetector {
         private void accept(CombatLogLine line) {
             var fields = line.fields();
             var source = player(fields, 1, 2, 3);
+            var sourceGuid = value(fields, 1);
+            var petName = source == null ? summonedPetNames.get(sourceGuid) : null;
+            if (source == null) source = participants.get(summonedPetOwners.get(sourceGuid));
             var target = player(fields, 5, 6, 7);
             var spellId = parseLong(fields, 9, 9);
             var spellName = value(fields, 10);
+            var attributedSpellId = petName == null ? spellId : petSpellId(sourceGuid, spellId);
+            var attributedSpellName = petName == null ? spellName : petName + ": " + spellName;
 
             switch (line.eventType()) {
                 case "COMBATANT_INFO" -> {
@@ -179,10 +191,17 @@ public class ArenaMatchDetector {
                         source.specializationName = specializationName(specId);
                     }
                 }
+                case "SPELL_SUMMON" -> {
+                    var summonedGuid = value(fields, 5);
+                    if (source != null && summonedGuid != null) {
+                        summonedPetOwners.put(summonedGuid, source.guid);
+                        summonedPetNames.put(summonedGuid, value(fields, 6) == null ? "Pet" : value(fields, 6));
+                    }
+                }
                 case "SPELL_DAMAGE", "SPELL_PERIODIC_DAMAGE" -> {
                     var amount = parseLong(fields, 12, 31);
-                    if (source != null) source.addDamage(spellId, spellName, amount, bool(fields, 38));
-                    if (target != null) target.addDamageTaken(spellId, spellName, amount, source, line.timestamp(), parseLong(fields, 14, 14), parseLong(fields, 15, 15));
+                    if (source != null) source.addDamage(attributedSpellId, attributedSpellName, amount, bool(fields, 38));
+                    if (target != null) target.addDamageTaken(attributedSpellId, attributedSpellName, amount, source, line.timestamp(), parseLong(fields, 14, 14), parseLong(fields, 15, 15));
                     var overkill = parseLong(fields, 13, 33);
                     if (overkill > 0 && source != null && target != null) {
                         source.kills++;
@@ -190,15 +209,29 @@ public class ArenaMatchDetector {
                 }
                 case "SWING_DAMAGE_LANDED" -> {
                     var amount = parseLong(fields, 9, 28);
-                    if (source != null) source.addDamage(0, "Melee", amount, bool(fields, 34));
-                    if (target != null) target.addDamageTaken(0, "Melee", amount, source, line.timestamp(), parseLong(fields, 11, 11), parseLong(fields, 12, 12));
+                    var meleeId = petName == null ? 0 : petSpellId(sourceGuid, 0);
+                    var meleeName = petName == null ? "Melee" : petName + ": Melee";
+                    if (source != null) source.addDamage(meleeId, meleeName, amount, bool(fields, 34));
+                    if (target != null) target.addDamageTaken(meleeId, meleeName, amount, source, line.timestamp(), parseLong(fields, 11, 11), parseLong(fields, 12, 12));
+                }
+                case "SPELL_MISSED", "SPELL_PERIODIC_MISSED" -> {
+                    if ("ABSORB".equals(value(fields, 12)) && source != null) {
+                        source.addDamage(attributedSpellId, attributedSpellName, parseLong(fields, 14, 14), bool(fields, 16));
+                    }
+                }
+                case "SWING_MISSED" -> {
+                    if ("ABSORB".equals(value(fields, 9)) && source != null) {
+                        var meleeId = petName == null ? 0 : petSpellId(sourceGuid, 0);
+                        var meleeName = petName == null ? "Melee" : petName + ": Melee";
+                        source.addDamage(meleeId, meleeName, parseLong(fields, 11, 11), bool(fields, 13));
+                    }
                 }
                 case "SPELL_HEAL", "SPELL_PERIODIC_HEAL" -> {
                     var amount = parseLong(fields, 12, 31);
                     var overhealing = parseLong(fields, 13, 33);
                     var effectiveHealing = Math.max(0, amount - overhealing);
-                    if (source != null) source.addHealing(spellId, spellName, amount, overhealing, bool(fields, 35));
-                    if (target != null) target.addIncoming("HEALING", spellName, effectiveHealing, source, line.timestamp(), parseLong(fields, 14, 14), parseLong(fields, 15, 15));
+                    if (source != null) source.addHealing(attributedSpellId, attributedSpellName, amount, overhealing, bool(fields, 35));
+                    if (target != null) target.addIncoming("HEALING", attributedSpellId, attributedSpellName, effectiveHealing, source, line.timestamp(), parseLong(fields, 14, 14), parseLong(fields, 15, 15));
                 }
                 case "SPELL_ABSORBED" -> {
                     var absorber = player(fields, 9, 10, 11);
@@ -207,15 +240,36 @@ public class ArenaMatchDetector {
                     var amount = parseLong(fields, 16, 17);
                     if (absorber != null) absorber.addAbsorb(absorbSpellId, absorbSpellName == null ? "Absorb" : absorbSpellName, amount);
                 }
-                case "SPELL_CAST_SUCCESS" -> { if (source != null) source.addCast(spellId, spellName); }
+                case "SPELL_CAST_SUCCESS" -> {
+                    if (source != null) source.addCast(spellId, spellName);
+                    if (source != null && ImportantSpellCatalog.isImportant(spellId, spellName)) {
+                        timeline.add(new MatchCombatDetails.TimelineEvent(
+                                offsetSeconds(line.timestamp()), spellId, spellName,
+                                ImportantSpellCatalog.category(spellId, spellName), source.name,
+                                source.team,
+                                target == null ? null : target.name, line.eventType()
+                        ));
+                    }
+                }
+                case "SPELL_AURA_APPLIED" -> {
+                    if (source != null && target != null && ImportantSpellCatalog.isImportant(spellId, spellName)) {
+                        timeline.add(new MatchCombatDetails.TimelineEvent(
+                                offsetSeconds(line.timestamp()), spellId, spellName,
+                                ImportantSpellCatalog.category(spellId, spellName), source.name,
+                                source.team, target.name, line.eventType()
+                        ));
+                    }
+                }
                 case "SPELL_INTERRUPT" -> {
                     if (source != null) source.addInterrupt(new MatchCombatDetails.UtilityAction(
-                            offsetSeconds(line.timestamp()), spellName, target == null ? null : target.name, value(fields, 13)
+                            offsetSeconds(line.timestamp()), spellId, spellName, target == null ? null : target.name,
+                            parseLong(fields, 12, 12), value(fields, 13)
                     ));
                 }
                 case "SPELL_DISPEL" -> {
                     if (source != null) source.addDispel(new MatchCombatDetails.UtilityAction(
-                            offsetSeconds(line.timestamp()), spellName, target == null ? null : target.name, value(fields, 13)
+                            offsetSeconds(line.timestamp()), spellId, spellName, target == null ? null : target.name,
+                            parseLong(fields, 12, 12), value(fields, 13)
                     ));
                 }
                 case "UNIT_DIED" -> {
@@ -240,6 +294,10 @@ public class ArenaMatchDetector {
             if (detectedTeam != null && participant.team == null) participant.team = detectedTeam;
             if (isAffiliationMine(flagsValue)) ownPlayerGuid = guid;
             return participant;
+        }
+
+        private long petSpellId(String petGuid, long spellId) {
+            return -Math.abs((((long) petGuid.hashCode()) << 32) ^ spellId) - 1;
         }
 
         private boolean isAffiliationMine(String flagsValue) {
@@ -285,8 +343,10 @@ public class ArenaMatchDetector {
                     .sorted(Comparator.comparing((ParticipantBuilder value) -> value.team, Comparator.nullsLast(Integer::compareTo)).thenComparing(value -> value.name))
                     .map(ParticipantBuilder::toDetails)
                     .toList();
-            return new MatchCombatDetails(participantDetails, List.copyOf(events), List.of());
+            return new MatchCombatDetails(participantDetails, List.copyOf(events), List.of(), List.copyOf(timeline));
         }
+
+        private List<MatchCombatDetails.TimelineEvent> timeline() { return List.copyOf(timeline); }
 
         private static String value(List<String> fields, int index) { return index < fields.size() ? fields.get(index) : null; }
         private static boolean bool(List<String> fields, int index) { return "1".equals(value(fields, index)) || "true".equalsIgnoreCase(value(fields, index)); }
@@ -355,8 +415,8 @@ public class ArenaMatchDetector {
         private void addDamage(long id, String name, long amount, boolean critical) { damage += amount; var value = spell(id, name); value.damage += amount; value.hits++; if (critical) value.criticals++; }
         private void addHealing(long id, String name, long amount, long overhealing, boolean critical) { healing += Math.max(0, amount - overhealing); var value = spell(id, name); value.healing += Math.max(0, amount - overhealing); value.overhealing += overhealing; value.hits++; if (critical) value.criticals++; }
         private void addAbsorb(long id, String name, long amount) { absorbs += amount; spell(id, name).absorbs += amount; }
-        private void addDamageTaken(long id, String name, long amount, ParticipantBuilder source, String timestamp, long healthAfter, long maxHealth) { damageTaken += amount; spell(id, name).damageTaken += amount; addIncoming("DAMAGE", name, amount, source, timestamp, healthAfter, maxHealth); }
-        private void addIncoming(String type, String spell, long amount, ParticipantBuilder source, String timestamp, long healthAfter, long maxHealth) { if (amount > 0) incomingEvents.add(new IncomingEvent(parseTime(timestamp), type, source == null ? null : source.name, spell, amount, healthAfter, maxHealth)); }
+        private void addDamageTaken(long id, String name, long amount, ParticipantBuilder source, String timestamp, long healthAfter, long maxHealth) { damageTaken += amount; spell(id, name).damageTaken += amount; addIncoming("DAMAGE", id, name, amount, source, timestamp, healthAfter, maxHealth); }
+        private void addIncoming(String type, long spellId, String spell, long amount, ParticipantBuilder source, String timestamp, long healthAfter, long maxHealth) { if (amount > 0) incomingEvents.add(new IncomingEvent(parseTime(timestamp), type, source == null ? null : source.name, spellId, spell, amount, healthAfter, maxHealth)); }
         private void addCast(long id, String name) { spell(id, name).casts++; }
         private void addInterrupt(MatchCombatDetails.UtilityAction action) { interrupts++; interruptDetails.add(action); }
         private void addDispel(MatchCombatDetails.UtilityAction action) { dispels++; dispelDetails.add(action); }
@@ -368,7 +428,7 @@ public class ArenaMatchDetector {
                     .filter(event -> !event.timestamp().isBefore(windowStart) && !event.timestamp().isAfter(deathTime))
                     .map(event -> new MatchCombatDetails.ReceivedEvent(
                             Duration.between(event.timestamp(), deathTime).toMillis() / 1000.0,
-                            event.type(), event.source(), event.spell(), event.amount(), event.healthAfter(), event.maxHealth()
+                            event.type(), event.source(), event.spellId(), event.spell(), event.amount(), event.healthAfter(), event.maxHealth()
                     ))
                     .toList();
             int offset;
@@ -382,7 +442,7 @@ public class ArenaMatchDetector {
         }
     }
 
-    private record IncomingEvent(LocalDateTime timestamp, String type, String source, String spell, long amount, long healthAfter, long maxHealth) { }
+    private record IncomingEvent(LocalDateTime timestamp, String type, String source, long spellId, String spell, long amount, long healthAfter, long maxHealth) { }
 
     private static final class SpellBuilder {
         private final long id; private final String name;

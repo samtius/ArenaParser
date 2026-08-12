@@ -6,10 +6,11 @@ import com.samtius.arenaparser.model.MatchResult;
 public record MatchCombatDetails(
         List<Participant> participants,
         List<KeyEvent> keyEvents,
-        List<RoundDetails> rounds
+        List<RoundDetails> rounds,
+        List<TimelineEvent> timeline
 ) {
     public static MatchCombatDetails empty() {
-        return new MatchCombatDetails(List.of(), List.of(), List.of());
+        return new MatchCombatDetails(List.of(), List.of(), List.of(), List.of());
     }
 
     public record Participant(
@@ -49,8 +50,10 @@ public record MatchCombatDetails(
 
     public record UtilityAction(
             int offsetSeconds,
+            long spellId,
             String spell,
             String target,
+            long affectedSpellId,
             String affectedSpell
     ) {
     }
@@ -66,6 +69,7 @@ public record MatchCombatDetails(
             double secondsBeforeDeath,
             String type,
             String source,
+            long spellId,
             String spell,
             long amount,
             long healthAfter,
@@ -88,7 +92,19 @@ public record MatchCombatDetails(
             Integer playerTeam,
             Integer winningTeam,
             MatchResult result,
-            List<Participant> participants
+            List<Participant> participants,
+            List<TimelineEvent> timeline
     ) {
     }
+
+    public record TimelineEvent(
+            int offsetSeconds,
+            long spellId,
+            String spell,
+            String category,
+            String source,
+            Integer team,
+            String target,
+            String eventType
+    ) { }
 }

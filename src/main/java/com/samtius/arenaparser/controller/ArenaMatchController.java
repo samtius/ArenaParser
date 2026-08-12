@@ -33,6 +33,11 @@ public class ArenaMatchController {
         return arenaMatchService.findAll();
     }
 
+    @GetMapping("/summaries")
+    public List<com.samtius.arenaparser.dto.ArenaMatchSummary> findAllSummaries() {
+        return arenaMatchService.findAllSummaries();
+    }
+
     @GetMapping("/{id}")
     public ArenaMatch findById(@PathVariable long id) {
         return arenaMatchService.findById(id)

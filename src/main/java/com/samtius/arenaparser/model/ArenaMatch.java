@@ -28,6 +28,8 @@ public class ArenaMatch {
     private Integer winningTeam;
     private Integer playerWins;
     private Integer playerLosses;
+    private Integer playerMmr;
+    private Integer opponentMmr;
 
     @JsonIgnore
     @Column(columnDefinition = "text")
@@ -126,6 +128,11 @@ public class ArenaMatch {
     public void setPlayerLosses(Integer playerLosses) {
         this.playerLosses = playerLosses;
     }
+
+    public Integer getPlayerMmr() { return playerMmr; }
+    public void setPlayerMmr(Integer playerMmr) { this.playerMmr = playerMmr; }
+    public Integer getOpponentMmr() { return opponentMmr; }
+    public void setOpponentMmr(Integer opponentMmr) { this.opponentMmr = opponentMmr; }
 
     public String getSourceKey() {
         return sourceKey;

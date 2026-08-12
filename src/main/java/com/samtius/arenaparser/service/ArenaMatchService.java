@@ -5,6 +5,7 @@ import com.samtius.arenaparser.model.ArenaMatch;
 import com.samtius.arenaparser.parser.DetectedArenaMatch;
 import com.samtius.arenaparser.repository.ArenaMatchRepository;
 import com.samtius.arenaparser.dto.MatchCombatDetails;
+import com.samtius.arenaparser.dto.ArenaMatchSummary;
 import tools.jackson.core.JacksonException;
 import tools.jackson.databind.ObjectMapper;
 import org.springframework.stereotype.Service;
@@ -18,6 +19,7 @@ import java.time.format.DateTimeFormatterBuilder;
 import java.time.temporal.ChronoField;
 import java.util.List;
 import java.util.Optional;
+import java.util.LinkedHashMap;
 
 @Service
 public class ArenaMatchService {
@@ -44,20 +46,47 @@ public class ArenaMatchService {
         return arenaMatchRepository.findAll();
     }
 
+    public List<ArenaMatchSummary> findAllSummaries() {
+        return arenaMatchRepository.findAll().stream().map(match -> {
+            MatchCombatDetails details;
+            try { details = readDetails(match); }
+            catch (IllegalStateException ignored) { details = MatchCombatDetails.empty(); }
+            var yourTeam = new LinkedHashMap<String, ArenaMatchSummary.CompositionMember>();
+            var opponentTeam = new LinkedHashMap<String, ArenaMatchSummary.CompositionMember>();
+            if (details.rounds() == null || details.rounds().isEmpty()) {
+                addComposition(details.participants(), match.getPlayerTeam(), yourTeam, opponentTeam);
+            } else {
+                details.rounds().forEach(round -> addComposition(round.participants(), round.playerTeam(), yourTeam, opponentTeam));
+            }
+            return new ArenaMatchSummary(match.getId(), match.getArena(), match.getStartedAt(), match.getDurationSeconds(),
+                    match.getInstanceId(), match.getMatchType(), match.getPlayerTeam(), match.getWinningTeam(), match.getResult(),
+                    match.getPlayerWins(), match.getPlayerLosses(), match.getPlayerMmr(), match.getOpponentMmr(), List.copyOf(yourTeam.values()), List.copyOf(opponentTeam.values()));
+        }).toList();
+    }
+
+    private void addComposition(List<MatchCombatDetails.Participant> participants, Integer playerTeam,
+                                LinkedHashMap<String, ArenaMatchSummary.CompositionMember> yourTeam,
+                                LinkedHashMap<String, ArenaMatchSummary.CompositionMember> opponentTeam) {
+        if (participants == null) return;
+        participants.forEach(participant -> {
+            var member = new ArenaMatchSummary.CompositionMember(participant.name(), participant.className(), participant.specializationName());
+            (playerTeam != null && playerTeam.equals(participant.team()) ? yourTeam : opponentTeam).putIfAbsent(participant.guid(), member);
+        });
+    }
+
+    private MatchCombatDetails readDetails(ArenaMatch match) {
+        if (match.getCombatDetailsJson() == null || match.getCombatDetailsJson().isBlank()) return MatchCombatDetails.empty();
+        try { return objectMapper.readValue(match.getCombatDetailsJson(), MatchCombatDetails.class); }
+        catch (JacksonException exception) { throw new IllegalStateException("Could not read stored combat details", exception); }
+    }
+
     public Optional<ArenaMatch> findById(long id) {
         return arenaMatchRepository.findById(id);
     }
 
     public Optional<MatchCombatDetails> findCombatDetails(long id) {
         return arenaMatchRepository.findById(id).map(match -> {
-            if (match.getCombatDetailsJson() == null || match.getCombatDetailsJson().isBlank()) {
-                return MatchCombatDetails.empty();
-            }
-            try {
-                return objectMapper.readValue(match.getCombatDetailsJson(), MatchCombatDetails.class);
-            } catch (JacksonException exception) {
-                throw new IllegalStateException("Could not read stored combat details", exception);
-            }
+            return readDetails(match);
         });
     }
 
@@ -86,6 +115,8 @@ public class ArenaMatchService {
                 match.setWinningTeam(detected.winningTeam());
                 match.setPlayerWins(detected.playerWins());
                 match.setPlayerLosses(detected.playerLosses());
+                match.setPlayerMmr(detected.playerMmr());
+                match.setOpponentMmr(detected.opponentMmr());
                 match.setResult(detected.result());
                 match.setCombatDetailsJson(writeDetails(detected.combatDetails()));
                 arenaMatchRepository.save(match);
@@ -102,6 +133,8 @@ public class ArenaMatchService {
             match.setWinningTeam(detected.winningTeam());
             match.setPlayerWins(detected.playerWins());
             match.setPlayerLosses(detected.playerLosses());
+            match.setPlayerMmr(detected.playerMmr());
+            match.setOpponentMmr(detected.opponentMmr());
             match.setResult(detected.result());
             match.setSourceKey(sourceKey);
             match.setCombatDetailsJson(writeDetails(detected.combatDetails()));
