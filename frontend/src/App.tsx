@@ -14,7 +14,13 @@ interface ArenaMatch {
   result: MatchResult;
   playerWins: number | null;
   playerLosses: number | null;
+  playerMmr: number | null;
+  opponentMmr: number | null;
+  yourTeam: CompositionMember[];
+  opponentTeam: CompositionMember[];
 }
+
+interface CompositionMember { name: string; className: string | null; specializationName: string | null; }
 
 interface ImportResponse {
   detectedMatches: number;
@@ -27,8 +33,8 @@ interface SpellStatistic {
   casts: number; hits: number; criticals: number; overhealing: number;
 }
 
-interface UtilityAction { offsetSeconds: number; spell: string | null; target: string | null; affectedSpell: string | null; }
-interface ReceivedEvent { secondsBeforeDeath: number; type: "DAMAGE" | "HEALING"; source: string | null; spell: string | null; amount: number; healthAfter: number; maxHealth: number; }
+interface UtilityAction { offsetSeconds: number; spellId: number; spell: string | null; target: string | null; affectedSpellId: number; affectedSpell: string | null; }
+interface ReceivedEvent { secondsBeforeDeath: number; type: "DAMAGE" | "HEALING"; source: string | null; spellId: number; spell: string | null; amount: number; healthAfter: number; maxHealth: number; }
 interface DeathRecap { deathNumber: number; offsetSeconds: number; receivedEvents: ReceivedEvent[]; }
 
 interface ParticipantDetails {
@@ -42,8 +48,42 @@ interface KeyEvent {
   offsetSeconds: number; type: string; source: string | null; target: string | null; spell: string | null;
 }
 
-interface RoundDetails { roundNumber: number; durationSeconds: number; playerTeam: number | null; winningTeam: number | null; result: MatchResult; participants: ParticipantDetails[]; }
-interface MatchDetails { participants: ParticipantDetails[]; keyEvents: KeyEvent[]; rounds: RoundDetails[]; }
+interface TimelineEvent { offsetSeconds: number; spellId: number; spell: string; category: "DEFENSIVE" | "OFFENSIVE" | "CROWD_CONTROL"; source: string; team: number | null; target: string | null; eventType: string; }
+interface RoundDetails { roundNumber: number; durationSeconds: number; playerTeam: number | null; winningTeam: number | null; result: MatchResult; participants: ParticipantDetails[]; timeline: TimelineEvent[]; }
+interface MatchDetails { participants: ParticipantDetails[]; keyEvents: KeyEvent[]; rounds: RoundDetails[]; timeline: TimelineEvent[]; }
+
+const healerSpecializations = new Set(["Discipline", "Holy", "Restoration", "Mistweaver", "Preservation"]);
+
+function timelineTargetLabel(event: TimelineEvent, participants: ParticipantDetails[]): string {
+  const target = event.target == null ? null : participants.find((participant) => participant.name === event.target);
+  if (target == null) return event.target ?? event.source;
+  if (healerSpecializations.has(target.specializationName)) return "healer";
+  return (target.className ?? target.name).toLowerCase();
+}
+
+function timelineTargetsLabel(event: TimelineEvent, relatedEvents: TimelineEvent[], participants: ParticipantDetails[]): string {
+  const labels = relatedEvents
+    .filter((candidate) =>
+      candidate.spellId === event.spellId &&
+      candidate.source === event.source &&
+      candidate.target != null &&
+      Math.abs(candidate.offsetSeconds - event.offsetSeconds) < 0.5
+    )
+    .map((candidate) => timelineTargetLabel(candidate, participants));
+  if (labels.length === 0) return timelineTargetLabel(event, participants);
+
+  const counts = new Map<string, number>();
+  labels.forEach((label) => counts.set(label, (counts.get(label) ?? 0) + 1));
+  return Array.from(counts, ([label, count]) => count > 1 ? `${label} ×${count}` : label).join(", ");
+}
+
+function deduplicateTimelineEvents(events: TimelineEvent[]): TimelineEvent[] {
+  return events.filter((event, index) => !events.slice(0, index).some((previous) =>
+    previous.spellId === event.spellId &&
+    previous.source === event.source &&
+    Math.abs(previous.offsetSeconds - event.offsetSeconds) < 0.5
+  ));
+}
 
 function resultLabel(match: ArenaMatch): string {
   return match.playerWins == null || match.playerLosses == null
@@ -90,6 +130,15 @@ function formatNumber(value: number): string {
   return new Intl.NumberFormat("en-GB", { notation: "compact", maximumFractionDigits: 1 }).format(value);
 }
 
+function compositionText(member: CompositionMember): string {
+  return [member.specializationName, member.className].filter(Boolean).join(" ");
+}
+
+function matchesTerms(team: CompositionMember[], value: string): boolean {
+  const haystacks = team.map((member) => `${member.name} ${member.className ?? ""} ${member.specializationName ?? ""}`.toLowerCase());
+  return value.toLowerCase().split(",").map((term) => term.trim()).filter(Boolean).every((term) => haystacks.some((member) => member.includes(term)));
+}
+
 function barStyle(value: number, maximum: number): CSSProperties {
   return { "--bar-width": `${maximum > 0 ? (value / maximum) * 60 : 0}%` } as CSSProperties;
 }
@@ -97,6 +146,11 @@ function barStyle(value: number, maximum: number): CSSProperties {
 function healthBarStyle(healthAfter: number, maxHealth: number): CSSProperties {
   const percentage = maxHealth > 0 ? Math.max(0, Math.min(100, (healthAfter / maxHealth) * 100)) : 0;
   return { "--bar-width": `${percentage}%` } as CSSProperties;
+}
+
+function SpellIcon({ spellId, name, size = 28, showTitle = true }: { spellId: number; name?: string | null; size?: number; showTitle?: boolean }) {
+  const resolvedId = spellId > 0 ? spellId : 6603;
+  return <img className="spell-icon" src={`https://images.wowarenalogs.com/spells/${resolvedId}.jpg`} width={size} height={size} loading="lazy" alt="" title={showTitle ? name ?? "Unknown spell" : undefined} onError={(event) => { event.currentTarget.src = "https://images.wowarenalogs.com/spells/6603.jpg"; }} />;
 }
 
 function MatchList({ matches, emptyMessage, onSelect }: { matches: ArenaMatch[]; emptyMessage: string; onSelect: (match: ArenaMatch) => void }) {
@@ -107,18 +161,49 @@ function MatchList({ matches, emptyMessage, onSelect }: { matches: ArenaMatch[];
   return (
     <div className="match-list">
       <div className="match-row table-header" aria-hidden="true">
-        <span>Result</span><span>Arena</span><span>Type</span><span>Date</span><span>Duration</span>
+        <span>Result</span><span>Arena</span><span>Compositions</span><span>Type</span><span>Date</span><span>Duration</span>
       </div>
       {matches.map((match) => (
         <button className="match-row match-row-button" key={match.id} onClick={() => onSelect(match)} aria-label={`View details for ${match.arena}`}>
           <span className={`result-badge ${match.result.toLowerCase()}`}>{resultLabel(match)}</span>
           <span className="arena-name"><strong>{match.arena}</strong><small>Instance {match.instanceId ?? "–"}</small></span>
+          <span className="composition-cell">
+            <small>Your team</small><span>{match.yourTeam.map((member) => <i key={`${member.name}-your`} title={member.name}>{compositionText(member)}</i>)}</span>
+            <small>Opponents</small><span>{match.opponentTeam.map((member) => <i key={`${member.name}-opponent`} title={member.name}>{compositionText(member)}</i>)}</span>
+          </span>
           <span data-label="Type">{match.matchType ?? "Unknown"}</span>
           <span data-label="Date">{formatDate(match.startedAt)}</span>
           <span data-label="Duration" className="duration">{formatDuration(match.durationSeconds)}</span>
         </button>
       ))}
     </div>
+  );
+}
+
+function MmrChart({ title, matches }: { title: string; matches: ArenaMatch[] }) {
+  const points = matches.filter((match) => (match.playerMmr ?? 0) > 0).sort((a, b) => a.startedAt.localeCompare(b.startedAt));
+  const ratings = points.map((match) => match.playerMmr as number);
+  const minimum = ratings.length > 0 ? Math.min(...ratings) : 0;
+  const maximum = ratings.length > 0 ? Math.max(...ratings) : 0;
+  const axisStep = Math.max(50, Math.ceil(Math.max(1, maximum - minimum) / 3 / 50) * 50);
+  const axisMinimum = ratings.length > 0 ? Math.max(0, Math.floor(minimum / axisStep) * axisStep) : 0;
+  const axisMaximum = ratings.length > 0 ? Math.max(axisMinimum + axisStep, Math.ceil(maximum / axisStep) * axisStep) : axisStep;
+  const ticks = Array.from({ length: Math.round((axisMaximum - axisMinimum) / axisStep) + 1 }, (_, index) => axisMinimum + index * axisStep).reverse();
+  const x = (index: number) => points.length === 1 ? 50 : 3 + (index / (points.length - 1)) * 94;
+  const y = (rating: number) => 94 - ((rating - axisMinimum) / Math.max(1, axisMaximum - axisMinimum)) * 88;
+  const polyline = points.map((match, index) => `${x(index)},${y(match.playerMmr!)}`).join(" ");
+  return (
+    <article className="mmr-card">
+      <div><span>{title}</span><strong>{ratings.at(-1) ?? "—"}</strong></div>
+      {ratings.length === 0 ? <p>No rated matches yet</p> : <div className="mmr-chart-wrap">
+        <div className="mmr-axis" aria-hidden="true">{ticks.map((tick) => <span key={tick}>{tick}</span>)}</div>
+        <svg className="mmr-line-chart" viewBox="0 0 100 100" preserveAspectRatio="none" role="img" aria-label={`${title} history from ${minimum} to ${maximum}`}>
+          {ticks.map((tick) => <line className="mmr-grid-line" key={tick} x1="0" x2="100" y1={y(tick)} y2={y(tick)} />)}
+          <polyline className="mmr-line" points={polyline} />
+        </svg>
+      </div>}
+      <small>{ratings.length > 0 ? `${minimum}–${maximum} · all ${ratings.length} matches` : "Team rating from combat logs"}</small>
+    </article>
   );
 }
 
@@ -130,7 +215,7 @@ function SpellSection({ title, spells, metric }: { title: string; spells: SpellS
       <summary><span>{title}</span><strong>{formatNumber(sorted.reduce((sum, spell) => sum + spell[metric], 0))}</strong></summary>
       {sorted.length === 0 ? <p className="no-breakdown">No {title.toLowerCase()} recorded.</p> : (
         <div className="breakdown-list">
-          {sorted.map((spell) => <div className={`bar-row ${metric === "healing" ? "healing-bar" : "damage-bar"}`} style={barStyle(spell[metric], maximum)} key={`${metric}-${spell.spellId}`}><span>{spell.name}</span><strong>{formatNumber(spell[metric])}</strong></div>)}
+          {sorted.map((spell) => <div className={`bar-row ${metric === "healing" ? "healing-bar" : "damage-bar"}`} style={barStyle(spell[metric], maximum)} key={`${metric}-${spell.spellId}`}><SpellIcon spellId={spell.spellId} name={spell.name} /><span>{spell.name}</span><strong>{formatNumber(spell[metric])}</strong></div>)}
         </div>
       )}
     </details>
@@ -146,6 +231,7 @@ function UtilitySection({ title, actions }: { title: string; actions: UtilityAct
           {actions.map((action, index) => (
             <div key={`${title}-${action.offsetSeconds}-${index}`}>
               <time>{formatDuration(action.offsetSeconds)}</time>
+              <SpellIcon spellId={action.affectedSpellId || action.spellId} name={action.affectedSpell ?? action.spell} />
               <span><strong>{action.spell ?? title.slice(0, -1)}</strong> on {action.target ?? "Unknown"}<small>{action.affectedSpell ? `Removed/stopped: ${action.affectedSpell}` : ""}</small></span>
             </div>
           ))}
@@ -164,12 +250,79 @@ function DeathRecapSection({ recaps }: { recaps: DeathRecap[] }) {
           <h4>Death {recap.deathNumber} <span>at {formatDuration(recap.offsetSeconds)}</span></h4>
           {recap.receivedEvents.length === 0 ? <p>No damage or healing in the final two seconds.</p> : recap.receivedEvents.map((event, index) => (
             <div className={`bar-row ${event.type === "HEALING" ? "healing-bar" : "damage-bar"}`} style={healthBarStyle(event.healthAfter, event.maxHealth)} key={`${event.secondsBeforeDeath}-${index}`}>
-              <time>-{event.secondsBeforeDeath.toFixed(2)}s</time><span>{event.spell ?? event.type} <small>from {event.source ?? "Unknown"}</small></span><span className="recap-values"><strong>{event.type === "HEALING" ? "+" : "-"}{formatNumber(event.amount)}</strong><small>{formatNumber(event.healthAfter)} / {formatNumber(event.maxHealth)} HP</small></span>
+              <time>-{event.secondsBeforeDeath.toFixed(2)}s</time><SpellIcon spellId={event.spellId} name={event.spell} /><span>{event.spell ?? event.type} <small>from {event.source ?? "Unknown"}</small></span><span className="recap-values"><strong>{event.type === "HEALING" ? "+" : "-"}{formatNumber(event.amount)}</strong><small>{formatNumber(event.healthAfter)} / {formatNumber(event.maxHealth)} HP</small></span>
             </div>
           ))}
         </div>
       ))}
     </details>
+  );
+}
+
+function CooldownTimeline({ events, relatedEvents = events, duration, playerTeam, participants, title = "Cooldown timeline", eyebrow = "Midnight 12.1 important spells" }: { events: TimelineEvent[]; relatedEvents?: TimelineEvent[]; duration: number; playerTeam: number | null; participants: ParticipantDetails[]; title?: string; eyebrow?: string }) {
+  const rows = Array.from({ length: Math.ceil(events.length / 20) }, (_, index) => {
+    const rowEvents = events.slice(index * 20, index * 20 + 20);
+    const startSeconds = index === 0 ? 0 : events[index * 20 - 1].offsetSeconds;
+    const endSeconds = rowEvents.length === 20
+      ? rowEvents[rowEvents.length - 1].offsetSeconds
+      : duration;
+
+    return { events: rowEvents, startSeconds, endSeconds };
+  });
+  return (
+    <section className="timeline-panel">
+      <div className="timeline-heading"><div><p className="eyebrow">{eyebrow}</p><h3>{title}</h3></div><span>{events.length} events</span></div>
+      {events.length === 0 ? <p className="timeline-empty">No tracked cooldowns were used in this match.</p> : (
+        <div className="timeline-rows">
+          {rows.map((row, rowIndex) => (
+            <div className="timeline-track" key={rowIndex}>
+              <span className="timeline-team-label team-one">{playerTeam == null ? "Team 1" : "Same team"}</span><span className="timeline-team-label team-two">{playerTeam == null ? "Team 2" : "Opponents"}</span>
+              <div className="timeline-axis"><span>{formatDuration(row.startSeconds)}</span><span>{formatDuration(row.endSeconds)}</span></div>
+              {row.events.map((event, index) => (
+                <button className={`timeline-event ${event.category.toLowerCase()} team-${playerTeam == null ? (event.team ?? 0) : event.team === playerTeam ? 0 : 1}`} style={{ left: `${row.endSeconds > row.startSeconds ? Math.min(100, Math.max(0, ((event.offsetSeconds - row.startSeconds) / (row.endSeconds - row.startSeconds)) * 100)) : 0}%` }} key={`${event.offsetSeconds}-${event.spellId}-${index}`} data-tooltip={`${event.spell} → ${timelineTargetsLabel(event, relatedEvents, participants)}`} aria-label={`${event.spell} affected ${timelineTargetsLabel(event, relatedEvents, participants)} at ${formatDuration(event.offsetSeconds)}, used by ${event.source}`}>
+                  <SpellIcon spellId={event.spellId} name={event.spell} size={32} showTitle={false} />
+                </button>
+              ))}
+            </div>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function PlayerTimeline({ player, events, duration, participants }: { player: ParticipantDetails; events: TimelineEvent[]; duration: number; participants: ParticipantDetails[] }) {
+  const personalEvents = deduplicateTimelineEvents(events.filter((event) =>
+      (event.source === player.name && (event.eventType === "SPELL_CAST_SUCCESS" || event.eventType === "SPELL_AURA_APPLIED")) ||
+      (event.target === player.name && event.eventType === "SPELL_AURA_APPLIED")
+    ));
+
+  return <CooldownTimeline events={personalEvents} relatedEvents={events} duration={duration} playerTeam={player.team} participants={participants} title={`${player.name}'s timeline`} eyebrow="Used and received important spells" />;
+}
+
+function PlayerCard({ player, timelineOpen, onToggleTimeline }: { player: ParticipantDetails; timelineOpen: boolean; onToggleTimeline: () => void }) {
+  return (
+    <article className="player-card">
+      <div className="player-heading"><span className="player-identity"><strong>{player.name}</strong><small>{player.className ?? "Unknown class"} · {player.specializationName ?? "Unknown specialization"}</small></span><span>{player.kills} K · {player.deaths} D</span></div>
+      <div className="player-metrics">
+        <span><small>Damage</small>{formatNumber(player.damage)}</span>
+        <span><small>Healing</small>{formatNumber(player.healing)}</span>
+        <span><small>Absorbs</small>{formatNumber(player.absorbs)}</span>
+        <span><small>Damage taken</small>{formatNumber(player.damageTaken)}</span>
+        <span><small>Utility</small>{player.interrupts} int · {player.dispels} disp</span>
+      </div>
+      <button className={`player-timeline-button ${timelineOpen ? "active" : ""}`} onClick={onToggleTimeline}>
+        {timelineOpen ? "Hide spell timeline" : "Show spell timeline"}
+      </button>
+      <div className="player-breakdowns">
+        <SpellSection title="Damage" spells={player.spells} metric="damage" />
+        <SpellSection title="Healing" spells={player.spells} metric="healing" />
+        <SpellSection title="Damage taken" spells={player.spells} metric="damageTaken" />
+        <UtilitySection title="Dispels" actions={player.dispelDetails} />
+        <UtilitySection title="Interrupts" actions={player.interruptDetails} />
+        <DeathRecapSection recaps={player.deathRecaps} />
+      </div>
+    </article>
   );
 }
 
@@ -182,14 +335,20 @@ function App() {
   const [selectedMatch, setSelectedMatch] = useState<ArenaMatch | null>(null);
   const [matchDetails, setMatchDetails] = useState<MatchDetails | null>(null);
   const [selectedRound, setSelectedRound] = useState(1);
+  const [timelinePlayerGuid, setTimelinePlayerGuid] = useState<string | null>(null);
   const [detailsLoading, setDetailsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [search, setSearch] = useState("");
+  const [yourTeamFilter, setYourTeamFilter] = useState("");
+  const [opponentFilter, setOpponentFilter] = useState("");
+  const [visibleMatches, setVisibleMatches] = useState(8);
+  const [visibleByCategory, setVisibleByCategory] = useState<Record<MatchCategory, number>>({ "solo-shuffle": 5, "2v2": 5, "3v3": 5, skirmish: 5 });
 
   const loadMatches = useCallback(async () => {
     setError(null);
     try {
-      const response = await fetch("/api/matches");
+      const response = await fetch("/api/matches/summaries");
       if (!response.ok) {
         throw new Error(`The backend responded with status ${response.status}`);
       }
@@ -207,21 +366,31 @@ function App() {
     void loadMatches();
   }, [loadMatches]);
 
-  const stats = useMemo(() => {
-    const wins = matches.filter((match) => match.result === "WIN").length;
-    const losses = matches.filter((match) => match.result === "LOSS").length;
-    const decided = wins + losses;
-    return { wins, losses, winRate: decided === 0 ? 0 : Math.round((wins / decided) * 100) };
+  useEffect(() => {
+    const handlePopState = () => {
+      const matchId = Number(new URLSearchParams(window.location.search).get("match"));
+      const match = matches.find((candidate) => candidate.id === matchId);
+      if (match) void openMatch(match, false);
+      else { setSelectedMatch(null); setMatchDetails(null); }
+    };
+    window.addEventListener("popstate", handlePopState);
+    if (matches.length > 0 && !selectedMatch) handlePopState();
+    return () => window.removeEventListener("popstate", handlePopState);
   }, [matches]);
+
+  const filteredMatches = useMemo(() => matches.filter((match) => {
+    const general = `${match.arena} ${match.matchType ?? ""} ${match.yourTeam.map(compositionText).join(" ")} ${match.opponentTeam.map(compositionText).join(" ")}`.toLowerCase();
+    return general.includes(search.trim().toLowerCase()) && matchesTerms(match.yourTeam, yourTeamFilter) && matchesTerms(match.opponentTeam, opponentFilter);
+  }), [matches, search, yourTeamFilter, opponentFilter]);
 
   const categorizedMatches = useMemo(
     () => Object.fromEntries(
       matchCategories.map((category) => [
         category.id,
-        matches.filter((match) => belongsToCategory(match, category.id)),
+        filteredMatches.filter((match) => belongsToCategory(match, category.id)),
       ]),
     ) as Record<MatchCategory, ArenaMatch[]>,
-    [matches],
+    [filteredMatches],
   );
 
   async function importLatestLog() {
@@ -262,9 +431,11 @@ function App() {
     }
   }
 
-  async function openMatch(match: ArenaMatch) {
+  async function openMatch(match: ArenaMatch, pushHistory = true) {
+    if (pushHistory) window.history.pushState({ matchId: match.id }, "", `${window.location.pathname}?match=${match.id}`);
     setSelectedMatch(match);
     setSelectedRound(1);
+    setTimelinePlayerGuid(null);
     setMatchDetails(null);
     setDetailsLoading(true);
     try {
@@ -277,6 +448,11 @@ function App() {
     } finally {
       setDetailsLoading(false);
     }
+  }
+
+  function closeMatch() {
+    if (new URLSearchParams(window.location.search).has("match")) window.history.back();
+    else { setSelectedMatch(null); setMatchDetails(null); }
   }
 
   if (stopped) {
@@ -293,6 +469,13 @@ function App() {
   const activeRound = matchDetails?.rounds?.find((round) => round.roundNumber === selectedRound);
   const detailParticipants = activeRound?.participants ?? matchDetails?.participants ?? [];
   const detailWinningTeam = activeRound?.winningTeam ?? selectedMatch?.winningTeam;
+  const detailPlayerTeam = activeRound?.playerTeam ?? selectedMatch?.playerTeam ?? null;
+  const detailTimeline = activeRound?.timeline ?? matchDetails?.timeline ?? [];
+  const detailDuration = activeRound?.durationSeconds ?? selectedMatch?.durationSeconds ?? 0;
+  const timelinePlayer = detailParticipants.find((player) => player.guid === timelinePlayerGuid) ?? null;
+  const detailTeams = [0, 1].map((team) => detailParticipants.filter((player) => player.team === team));
+  const playerRowCount = Math.max(...detailTeams.map((team) => team.length), 0);
+  const timelinePlayerRow = timelinePlayer?.team == null ? -1 : detailTeams[timelinePlayer.team]?.findIndex((player) => player.guid === timelinePlayer.guid) ?? -1;
 
   return (
     <main className="app-shell">
@@ -324,14 +507,15 @@ function App() {
 
       {(notice || error) && <div className={`message ${error ? "error" : "success"}`} role="status">{error ?? notice}</div>}
 
-      <section className="stats-grid" aria-label="Summary">
-        <article className="stat-card"><span>Matches</span><strong>{matches.length}</strong><small>Total imported</small></article>
-        <article className="stat-card win"><span>Wins</span><strong>{stats.wins}</strong><small>{stats.winRate}% win rate</small></article>
-        <article className="stat-card loss"><span>Losses</span><strong>{stats.losses}</strong><small>Of decided matches</small></article>
+      <section className="rating-modes" aria-label="Rating history">
+        {(["2v2", "3v3", "solo-shuffle"] as MatchCategory[]).map((category) => {
+          const title = category === "solo-shuffle" ? "Solo Shuffle" : category;
+          return <section className="rating-mode" key={category}><h2>{title}</h2><MmrChart title="Your team's MMR" matches={matches.filter((match) => belongsToCategory(match, category))} /></section>;
+        })}
       </section>
 
       <nav className="category-nav" aria-label="Match history categories">
-        <a href="#recent-matches"><strong>{matches.length}</strong><span>All matches</span></a>
+        <a href="#recent-matches"><strong>{filteredMatches.length}</strong><span>All matches</span></a>
         {matchCategories.map((category) => (
           <a href={`#${category.id}`} key={category.id}>
             <strong>{categorizedMatches[category.id].length}</strong><span>{category.title}</span>
@@ -342,12 +526,20 @@ function App() {
       <section className="matches-panel" id="recent-matches">
         <div className="section-heading">
           <div><p className="eyebrow">All arena modes</p><h2>Recent matches</h2></div>
-          <span>{Math.min(matches.length, 8)} of {matches.length} matches</span>
+          <span>{Math.min(filteredMatches.length, visibleMatches)} of {filteredMatches.length} matches</span>
         </div>
 
-        {loading ? <div className="empty-state">Loading matches…</div> : matches.length === 0 ? (
-          <div className="empty-state"><strong>No matches yet</strong><p>Import your latest combat log to get started.</p></div>
-        ) : <MatchList matches={matches.slice(0, 8)} emptyMessage="Import your latest combat log to get started." onSelect={openMatch} />}
+        <section className="match-filters" aria-label="Filter matches">
+          <label className="search-field"><span>Search all matches</span><input type="search" value={search} onChange={(event) => { setSearch(event.target.value); setVisibleMatches(8); }} placeholder="Search warrior, discipline, Nagrand…" /></label>
+          <label><span>Your team</span><input value={yourTeamFilter} onChange={(event) => { setYourTeamFilter(event.target.value); setVisibleMatches(8); }} placeholder="e.g. restoration, warrior" /></label>
+          <label><span>Opponent team</span><input value={opponentFilter} onChange={(event) => { setOpponentFilter(event.target.value); setVisibleMatches(8); }} placeholder="e.g. discipline, rogue" /></label>
+          <button className="clear-filters" onClick={() => { setSearch(""); setYourTeamFilter(""); setOpponentFilter(""); setVisibleMatches(8); }}>Clear</button>
+          <p>Separate multiple composition requirements with commas. Every term must occur in that team.</p>
+        </section>
+
+        {loading ? <div className="empty-state">Loading matches…</div> : filteredMatches.length === 0 ? (
+          <div className="empty-state"><strong>No matching games</strong><p>Try removing one of the filters.</p></div>
+        ) : <><MatchList matches={filteredMatches.slice(0, visibleMatches)} emptyMessage="Import your latest combat log to get started." onSelect={openMatch} />{visibleMatches < filteredMatches.length && <button className="load-more" onClick={() => setVisibleMatches((count) => count + 8)}>Load more matches</button>}</>}
       </section>
 
       <div className="category-sections">
@@ -360,17 +552,18 @@ function App() {
                 <span>{categoryMatches.length} matches</span>
               </div>
               <MatchList
-                matches={categoryMatches.slice(0, 5)}
+                matches={categoryMatches.slice(0, visibleByCategory[category.id])}
                 emptyMessage={`Your recent ${category.title} matches will appear here.`}
                 onSelect={openMatch}
               />
+              {visibleByCategory[category.id] < categoryMatches.length && <button className="load-more" onClick={() => setVisibleByCategory((counts) => ({ ...counts, [category.id]: counts[category.id] + 5 }))}>Load more {category.title} matches</button>}
             </section>
           );
         })}
       </div>
 
       {selectedMatch && (
-        <div className="modal-backdrop" role="presentation" onMouseDown={() => setSelectedMatch(null)}>
+        <div className="modal-backdrop" role="presentation" onMouseDown={closeMatch}>
           <section className="match-detail" role="dialog" aria-modal="true" aria-labelledby="match-detail-title" onMouseDown={(event) => event.stopPropagation()}>
             <header className="detail-header">
               <div>
@@ -378,7 +571,7 @@ function App() {
                 <h2 id="match-detail-title">{selectedMatch.arena}</h2>
                 <p>{selectedMatch.matchType ?? "Unknown mode"} · {formatDate(selectedMatch.startedAt)} · {formatDuration(selectedMatch.durationSeconds)}</p>
               </div>
-              <button className="close-button" onClick={() => setSelectedMatch(null)} aria-label="Close match details">×</button>
+              <button className="close-button" onClick={closeMatch} aria-label="Close match details">×</button>
             </header>
 
             {detailsLoading ? <div className="detail-loading">Loading combat statistics…</div> : matchDetails && (
@@ -389,7 +582,7 @@ function App() {
                       <button
                         className={`${round.result.toLowerCase()} ${selectedRound === round.roundNumber ? "active" : ""}`}
                         key={round.roundNumber}
-                        onClick={() => setSelectedRound(round.roundNumber)}
+                        onClick={() => { setSelectedRound(round.roundNumber); setTimelinePlayerGuid(null); }}
                       >
                         <span>Round {round.roundNumber}</span>
                         <strong>{round.result}</strong>
@@ -397,6 +590,7 @@ function App() {
                     ))}
                   </nav>
                 )}
+                <CooldownTimeline events={deduplicateTimelineEvents(detailTimeline)} relatedEvents={detailTimeline} duration={detailDuration} playerTeam={detailPlayerTeam} participants={detailParticipants} />
                 <div className="detail-summary">
                   <div><span>Players</span><strong>{detailParticipants.length}</strong></div>
                   <div><span>Total damage</span><strong>{formatNumber(detailParticipants.reduce((sum, player) => sum + player.damage, 0))}</strong></div>
@@ -405,30 +599,20 @@ function App() {
                 </div>
 
                 <div className="teams-grid">
-                  {[0, 1].map((team) => (
-                    <section className="team-panel" key={team}>
-                      <div className="team-heading"><h3>Team {team + 1}</h3><span>{team === detailWinningTeam ? "Winner" : ""}</span></div>
-                      {detailParticipants.filter((player) => player.team === team).map((player) => (
-                        <article className="player-card" key={player.guid}>
-                          <div className="player-heading"><span className="player-identity"><strong>{player.name}</strong><small>{player.className ?? "Unknown class"} · {player.specializationName ?? "Unknown specialization"}</small></span><span>{player.kills} K · {player.deaths} D</span></div>
-                          <div className="player-metrics">
-                            <span><small>Damage</small>{formatNumber(player.damage)}</span>
-                            <span><small>Healing</small>{formatNumber(player.healing)}</span>
-                            <span><small>Absorbs</small>{formatNumber(player.absorbs)}</span>
-                            <span><small>Damage taken</small>{formatNumber(player.damageTaken)}</span>
-                            <span><small>Utility</small>{player.interrupts} int · {player.dispels} disp</span>
-                          </div>
-                          <div className="player-breakdowns">
-                            <SpellSection title="Damage" spells={player.spells} metric="damage" />
-                            <SpellSection title="Healing" spells={player.spells} metric="healing" />
-                            <SpellSection title="Damage taken" spells={player.spells} metric="damageTaken" />
-                            <UtilitySection title="Dispels" actions={player.dispelDetails} />
-                            <UtilitySection title="Interrupts" actions={player.interruptDetails} />
-                            <DeathRecapSection recaps={player.deathRecaps} />
-                          </div>
-                        </article>
-                      ))}
-                    </section>
+                  {[0, 1].map((team) => <div className="team-heading" key={`heading-${team}`}><h3>{team === detailPlayerTeam ? "Your team" : `Team ${team + 1}`}</h3><span>{team === detailWinningTeam ? "Winner" : ""}</span></div>)}
+                  {Array.from({ length: playerRowCount }, (_, rowIndex) => (
+                    <div className="team-row" key={`row-${rowIndex}`}>
+                      {timelinePlayer && timelinePlayerRow === rowIndex && (
+                        <div className="full-player-timeline">
+                          <button className="close-player-timeline" onClick={() => setTimelinePlayerGuid(null)} aria-label={`Close ${timelinePlayer.name}'s spell timeline`}>×</button>
+                          <PlayerTimeline player={timelinePlayer} events={detailTimeline} duration={detailDuration} participants={detailParticipants} />
+                        </div>
+                      )}
+                      {[0, 1].map((team) => detailTeams[team][rowIndex]
+                        ? <PlayerCard key={detailTeams[team][rowIndex].guid} player={detailTeams[team][rowIndex]} timelineOpen={timelinePlayerGuid === detailTeams[team][rowIndex].guid} onToggleTimeline={() => setTimelinePlayerGuid((current) => current === detailTeams[team][rowIndex].guid ? null : detailTeams[team][rowIndex].guid)} />
+                        : <div className="player-card-placeholder" key={`empty-${team}-${rowIndex}`} aria-hidden="true" />
+                      )}
+                    </div>
                   ))}
                 </div>
 
