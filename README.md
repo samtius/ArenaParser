@@ -156,6 +156,104 @@ Stop everything with:
 
 This stops the frontend, backend and PostgreSQL container while preserving database data.
 
+## Set up a new macOS computer
+
+These instructions work on both Apple silicon and Intel Macs. The easiest way to install the command-line dependencies is with [Homebrew](https://brew.sh/). Install Homebrew first if it is not already available.
+
+### 1. Install the requirements
+
+Install Git, Java 21 and Node.js 22:
+
+```bash
+brew install git
+brew install --cask temurin@21
+brew install node@22
+```
+
+Homebrew may print an additional command for adding `node@22` to `PATH`. Run that command if `node --version` is not found after opening a new Terminal window.
+
+Enable Corepack and verify the installations:
+
+```bash
+corepack enable
+git --version
+java -version
+node --version
+corepack pnpm --version
+```
+
+Install [Docker Desktop for Mac](https://docs.docker.com/desktop/setup/install/mac-install/) and choose the download that matches the Mac's processor. Start Docker Desktop once and wait until Docker Engine is running.
+
+VS Code is optional. If you use it, install the `code` shell command from VS Code's Command Palette by selecting **Shell Command: Install 'code' command in PATH**.
+
+### 2. Clone the repository
+
+```bash
+git clone https://github.com/samtius/ArenaParser.git
+cd ArenaParser
+```
+
+To open the project in VS Code:
+
+```bash
+code .
+```
+
+### 3. Create the local environment file
+
+```bash
+cp .env.example .env
+```
+
+Open `.env` and change the database password and machine-specific settings. A typical WoW Retail log directory on macOS is:
+
+```dotenv
+POSTGRES_PASSWORD=choose-a-local-password
+ARENAPARSER_COMBAT_LOG_PATH="/Applications/World of Warcraft/_retail_/Logs"
+ARENAPARSER_COMBAT_LOG_ZONE=Europe/Stockholm
+```
+
+Keep the quotation marks around paths containing spaces. If WoW was installed elsewhere, open its folder in Finder and use the actual `Logs` directory. ArenaParser should point to the directory, not to one particular combat-log file.
+
+### 4. Install frontend packages
+
+```bash
+cd frontend
+corepack pnpm install --frozen-lockfile
+cd ..
+```
+
+### 5. Start the application
+
+The included one-click `start.cmd` and `stop.cmd` scripts are Windows-specific. On macOS, start the services in two Terminal tabs.
+
+In the first tab, from the repository root, start PostgreSQL and the backend:
+
+```bash
+docker compose up -d
+set -a
+source .env
+set +a
+./mvnw spring-boot:run -Dspring-boot.run.profiles=local
+```
+
+In a second tab, start the frontend:
+
+```bash
+cd frontend
+corepack pnpm dev
+```
+
+Open `http://127.0.0.1:5173` in a browser. The backend health endpoint is available at `http://127.0.0.1:8080/api/health`.
+
+To stop ArenaParser, press `Control+C` in both Terminal tabs. Then stop PostgreSQL from the repository root:
+
+```bash
+docker compose stop
+```
+
+The PostgreSQL data remains in the Docker volume and is available the next time the application starts.
+
 ## Running services separately
 
 This is useful while developing one part of the application.
