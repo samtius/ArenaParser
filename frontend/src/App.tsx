@@ -170,16 +170,16 @@ function timelineWithStoredDeaths(events: TimelineEvent[], participants: Partici
   return combined.sort((first, second) => first.offsetSeconds - second.offsetSeconds);
 }
 
-function timelineStackIndex(events: TimelineEvent[], eventIndex: number, sideFor: (event: TimelineEvent) => number): number {
+function timelineStackIndex(events: TimelineEvent[], eventIndex: number, sideFor: (event: TimelineEvent) => number, collisionWindowSeconds: number): number {
   const event = events[eventIndex];
   const side = sideFor(event);
   return events.slice(0, eventIndex).filter((candidate) =>
-    candidate.offsetSeconds === event.offsetSeconds && sideFor(candidate) === side
-  ).length;
+    sideFor(candidate) === side && Math.abs(candidate.offsetSeconds - event.offsetSeconds) <= collisionWindowSeconds
+  ).length % 3;
 }
 
 function timelineEventStyle(left: string, stackIndex: number): CSSProperties {
-  return { left, "--timeline-stack-offset": `${stackIndex * 12}px` } as CSSProperties;
+  return { left, "--timeline-stack-offset": `${stackIndex * 17}px` } as CSSProperties;
 }
 
 function drCategory(spell: string): string {
@@ -607,7 +607,7 @@ function CooldownTimeline({ events, relatedEvents = events, duration, playerTeam
                 };
                 const side = sideFor(event);
                 const left = `${row.endSeconds > row.startSeconds ? Math.min(100, Math.max(0, ((event.offsetSeconds - row.startSeconds) / (row.endSeconds - row.startSeconds)) * 100)) : 0}%`;
-                const stackIndex = timelineStackIndex(row.events, index, sideFor);
+                const stackIndex = timelineStackIndex(row.events, index, sideFor, Math.max(0.75, (row.endSeconds - row.startSeconds) * 0.05));
                 const description = timelineEventDescription(event, relatedEvents, participants);
                 return <button className={`timeline-event ${event.category.toLowerCase()} team-${side}`} style={timelineEventStyle(left, stackIndex)} key={`${event.offsetSeconds}-${event.spellId}-${index}`} data-tooltip={description} aria-label={description}>
                   <TimelineEventIcon event={event} />
@@ -653,7 +653,7 @@ function ComparisonTimeline({ players, events, duration, participants, playerTea
               {personalEvents.map((event, index) => {
                 const ally = player.team != null && timelineEventTeam(event, participants) === player.team;
                 const sideFor = (candidate: TimelineEvent) => player.team != null && timelineEventTeam(candidate, participants) === player.team ? 0 : 1;
-                const stackIndex = timelineStackIndex(personalEvents, index, sideFor);
+                const stackIndex = timelineStackIndex(personalEvents, index, sideFor, 1.5);
                 const left = `${Math.min(100, Math.max(0, ((event.offsetSeconds - window.start) / 30) * 100))}%`;
                 const description = timelineEventDescription(event, events, participants);
                 return <button className={`timeline-event ${event.category.toLowerCase()} team-${ally ? 0 : 1}`} style={timelineEventStyle(left, stackIndex)} key={`${event.offsetSeconds}-${event.spellId}-${index}`} data-tooltip={description} aria-label={description}>
@@ -703,7 +703,7 @@ function DrOverlapTimeline({ overlaps, duration, playerTeam }: { overlaps: DrOve
                   const end = Math.min(windowStart + 30, overlap.end);
                   const relation = overlap.immune ? "Immune" : overlap.gap < 0 ? `${formatCcDuration(Math.abs(overlap.gap))} duration overlap` : `${formatCcDuration(overlap.gap)} after previous CC ended`;
                   const description = `${overlap.first} → ${overlap.second} on ${target.name} · ${relation} · ${overlap.category} DR at ${formatDuration(overlap.start)}`;
-                  return <button className={`dr-overlap-marker ${overlap.immune ? "immune" : ""}`} style={{ left: `${((start - windowStart) / 30) * 100}%`, width: `${Math.max(3, ((end - start) / 30) * 100)}%`, top: `${8 + index * 7}px` }} data-tooltip={description} aria-label={description} key={`${overlap.start}-${overlap.secondSpellId}-${index}`}>
+                  return <button className={`dr-overlap-marker ${overlap.immune ? "immune" : ""}`} style={{ left: `${((start - windowStart) / 30) * 100}%`, width: `${Math.max(3, ((end - start) / 30) * 100)}%`, top: `${5 + (index % 3) * 18}px` }} data-tooltip={description} aria-label={description} key={`${overlap.start}-${overlap.secondSpellId}-${index}`}>
                     <span className="warning-spell-icons"><SpellIcon spellId={overlap.firstSpellId} name={overlap.first} size={22} showTitle={false} /><SpellIcon spellId={overlap.secondSpellId} name={overlap.second} size={22} showTitle={false} /></span>
                     <b>{overlap.immune ? "IMMUNE" : "DR"}</b>
                   </button>;
