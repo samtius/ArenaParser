@@ -98,7 +98,7 @@ public record MatchCombatDetails(
     }
 
     public record TimelineEvent(
-            int offsetSeconds,
+            double offsetSeconds,
             long spellId,
             String spell,
             String category,

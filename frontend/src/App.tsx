@@ -78,11 +78,40 @@ interface KeyEvent {
   offsetSeconds: number; type: string; source: string | null; target: string | null; spell: string | null;
 }
 
-interface TimelineEvent { offsetSeconds: number; spellId: number; spell: string; category: "DEFENSIVE" | "OFFENSIVE" | "CROWD_CONTROL"; source: string; team: number | null; target: string | null; eventType: string; }
+interface TimelineEvent { offsetSeconds: number; spellId: number; spell: string; category: "DEFENSIVE" | "OFFENSIVE" | "CROWD_CONTROL" | "DEATH"; source: string; team: number | null; target: string | null; eventType: string; }
+interface CcInterval { start: number; end: number; spellId: number; spell: string; source: string; exactDuration: boolean; lane: number; drCategory: string; previousDrEnd: number | null; previousDrSpell: string | null; previousDrSpellId: number | null; drGap: number | null; }
+interface CcChain { start: number; end: number; totalDuration: number; exactDuration: boolean; trinket: TimelineEvent | null; }
+interface DefensiveOverlap { target: string; first: string; firstSpellId: number; second: string; secondSpellId: number; start: number; end: number; }
+interface DrOverlap { target: ParticipantDetails; first: string; firstSpellId: number; second: string; secondSpellId: number; category: string; start: number; end: number; gap: number; immune: boolean; }
 interface RoundDetails { roundNumber: number; durationSeconds: number; playerTeam: number | null; winningTeam: number | null; result: MatchResult; participants: ParticipantDetails[]; timeline: TimelineEvent[]; }
 interface MatchDetails { participants: ParticipantDetails[]; keyEvents: KeyEvent[]; rounds: RoundDetails[]; timeline: TimelineEvent[]; }
 
 const healerSpecializations = new Set(["Discipline", "Holy", "Restoration", "Mistweaver", "Preservation"]);
+
+function isAllowedDefensiveCombination(firstSpell: string, secondSpell: string): boolean {
+  const spells = new Set([firstSpell.toLowerCase().trim(), secondSpell.toLowerCase().trim()]);
+  return spells.size === 2 && spells.has("phase shift") && spells.has("fade");
+}
+
+function isIgnoredDefensiveOverlapSpell(spell: string, spellId: number): boolean {
+  const name = spell.toLowerCase().trim();
+  return name.includes("phase shift")
+    || name === "fade"
+    || name.includes("frenzied regeneration")
+    || name.includes("sanctified ground")
+    || name.includes("precognition")
+    || name.includes("spirit of redemption")
+    || name.includes("gladiator's medallion")
+    || name.includes("pvp trinket")
+    || name === "trinket"
+    || spellId === 336126
+    || spellId === 208683
+    || spellId === 42292;
+}
+
+function timelineEventTeam(event: TimelineEvent, participants: ParticipantDetails[]): number | null {
+  return participants.find((participant) => participant.name === event.source)?.team ?? event.team;
+}
 
 function timelineTargetLabel(event: TimelineEvent, participants: ParticipantDetails[]): string {
   const target = event.target == null ? null : participants.find((participant) => participant.name === event.target);
@@ -121,6 +150,164 @@ function deduplicateTimelineEvents(events: TimelineEvent[]): TimelineEvent[] {
   return groups.map((group) => group.find((event) => event.eventType === "SPELL_CAST_SUCCESS") ?? group[0]);
 }
 
+function timelineWithStoredDeaths(events: TimelineEvent[], participants: ParticipantDetails[]): TimelineEvent[] {
+  const combined = [...events];
+  participants.forEach((player) => (player.deathRecaps ?? []).forEach((recap) => {
+    const alreadyIncluded = combined.some((event) =>
+      event.eventType === "UNIT_DIED" && event.target === player.name && event.offsetSeconds === recap.offsetSeconds
+    );
+    if (!alreadyIncluded) combined.push({
+      offsetSeconds: recap.offsetSeconds,
+      spellId: 0,
+      spell: "Died",
+      category: "DEATH",
+      source: player.name,
+      team: player.team,
+      target: player.name,
+      eventType: "UNIT_DIED"
+    });
+  }));
+  return combined.sort((first, second) => first.offsetSeconds - second.offsetSeconds);
+}
+
+function timelineStackIndex(events: TimelineEvent[], eventIndex: number, sideFor: (event: TimelineEvent) => number): number {
+  const event = events[eventIndex];
+  const side = sideFor(event);
+  return events.slice(0, eventIndex).filter((candidate) =>
+    candidate.offsetSeconds === event.offsetSeconds && sideFor(candidate) === side
+  ).length;
+}
+
+function timelineEventStyle(left: string, stackIndex: number): CSSProperties {
+  return { left, "--timeline-stack-offset": `${stackIndex * 12}px` } as CSSProperties;
+}
+
+function drCategory(spell: string): string {
+  const name = spell.toLowerCase();
+  if (["kidney shot", "cheap shot", "hammer of justice", "leg sweep", "maim", "mighty bash", "storm bolt", "asphyxiate", "shadowfury", "axe toss"].some((value) => name.includes(value))) return "Stun";
+  if (["cyclone", "fear", "psychic scream", "howl of terror", "intimidating shout"].some((value) => name.includes(value))) return "Disorient";
+  if (["polymorph", "sap", "repentance", "paralysis", "freezing trap", "hex", "imprison", "gouge", "mortal coil"].some((value) => name.includes(value))) return "Incapacitate";
+  if (["frost nova", "entangling roots", "mass entanglement"].some((value) => name.includes(value))) return "Root";
+  if (["silence", "garrote"].some((value) => name.includes(value))) return "Silence";
+  return spell;
+}
+
+function defensiveOwner(event: TimelineEvent): string | null {
+  // Touch of Karma applies a harmful aura to the opponent, but the defensive
+  // cooldown protects the monk who cast it.
+  if (event.spell.toLowerCase().includes("touch of karma")) return event.source || null;
+  return event.target;
+}
+
+function defensiveOverlaps(events: TimelineEvent[]): DefensiveOverlap[] {
+  const applications = events.filter((event) => event.category === "DEFENSIVE" && event.eventType === "SPELL_AURA_APPLIED" && defensiveOwner(event));
+  const removals = events.filter((event) => event.category === "DEFENSIVE" && event.eventType === "SPELL_AURA_REMOVED" && defensiveOwner(event));
+  const usedRemovals = new Set<number>();
+  const intervals = applications.flatMap((event) => {
+    const owner = defensiveOwner(event);
+    const removalIndex = removals.findIndex((removal, index) => !usedRemovals.has(index) && defensiveOwner(removal) === owner && removal.offsetSeconds >= event.offsetSeconds && (removal.spellId === event.spellId || removal.spell === event.spell));
+    if (removalIndex < 0) return [];
+    usedRemovals.add(removalIndex);
+    return [{ target: owner!, spell: event.spell, spellId: event.spellId, start: event.offsetSeconds, end: removals[removalIndex].offsetSeconds }];
+  });
+  const overlaps: DefensiveOverlap[] = [];
+  intervals.forEach((first, index) => intervals.slice(index + 1).forEach((second) => {
+    const start = Math.max(first.start, second.start); const end = Math.min(first.end, second.end);
+    if (first.target === second.target && first.spell !== second.spell && start < end
+      && !isIgnoredDefensiveOverlapSpell(first.spell, first.spellId)
+      && !isIgnoredDefensiveOverlapSpell(second.spell, second.spellId)
+      && !isAllowedDefensiveCombination(first.spell, second.spell))
+      overlaps.push({ target: first.target, first: first.spell, firstSpellId: first.spellId, second: second.spell, secondSpellId: second.spellId, start, end });
+  }));
+  return overlaps;
+}
+
+function healerCcIntervals(healer: ParticipantDetails, events: TimelineEvent[], duration: number): CcInterval[] {
+  const removals = events.filter((event) => event.category === "CROWD_CONTROL" && event.eventType === "SPELL_AURA_REMOVED" && event.target === healer.name);
+  const usedRemovals = new Set<number>();
+  const intervals = events
+    .filter((event) => event.category === "CROWD_CONTROL" && event.eventType === "SPELL_AURA_APPLIED" && event.target === healer.name)
+    .map((event): CcInterval => {
+      const removalIndex = removals.findIndex((removal, index) => !usedRemovals.has(index) && removal.offsetSeconds >= event.offsetSeconds && (removal.spellId === event.spellId || removal.spell === event.spell));
+      if (removalIndex >= 0) usedRemovals.add(removalIndex);
+      const exactDuration = removalIndex >= 0;
+      return { start: event.offsetSeconds, end: exactDuration ? removals[removalIndex].offsetSeconds : Math.min(duration, event.offsetSeconds + 1), spellId: event.spellId, spell: event.spell, source: event.source, exactDuration, lane: 0, drCategory: drCategory(event.spell), previousDrEnd: null, previousDrSpell: null, previousDrSpellId: null, drGap: null };
+    })
+    .sort((first, second) => first.start - second.start || first.end - second.end);
+
+  intervals.forEach((interval, index) => {
+    const occupied = new Set(intervals.slice(0, index).filter((previous) => previous.end > interval.start).map((previous) => previous.lane));
+    while (occupied.has(interval.lane)) interval.lane++;
+  });
+  const previousByCategory = new Map<string, CcInterval>();
+  intervals.forEach((interval) => {
+    const previous = previousByCategory.get(interval.drCategory);
+    if (previous && interval.start - previous.end <= 18) {
+      interval.previousDrEnd = previous.end;
+      interval.previousDrSpell = previous.spell;
+      interval.previousDrSpellId = previous.spellId;
+      interval.drGap = interval.start - previous.end;
+    }
+    if (!previous || interval.end >= previous.end) previousByCategory.set(interval.drCategory, interval);
+  });
+  return intervals;
+}
+
+function drOverlaps(participants: ParticipantDetails[], events: TimelineEvent[], duration: number): DrOverlap[] {
+  return participants.flatMap((target) => {
+    const intervals = healerCcIntervals(target, events, duration);
+    const reducedApplications: DrOverlap[] = intervals
+      .filter((interval) => interval.drGap != null && interval.previousDrEnd != null)
+      .map((interval) => ({
+        target,
+        first: interval.previousDrSpell ?? "Previous CC",
+        firstSpellId: interval.previousDrSpellId ?? 0,
+        second: interval.spell,
+        secondSpellId: interval.spellId,
+        category: interval.drCategory,
+        start: interval.start,
+        end: Math.max(interval.start + 0.5, interval.end),
+        gap: interval.drGap!,
+        immune: false,
+      }));
+    const immuneAttempts: DrOverlap[] = events
+      .filter((event) => event.category === "CROWD_CONTROL" && event.eventType === "SPELL_MISSED" && event.target === target.name)
+      .flatMap((event) => {
+        const category = drCategory(event.spell);
+        const previous = intervals.filter((interval) => interval.drCategory === category && interval.start <= event.offsetSeconds && event.offsetSeconds - interval.end <= 18).at(-1);
+        if (!previous) return [];
+        return [{ target, first: previous.spell, firstSpellId: previous.spellId, second: event.spell, secondSpellId: event.spellId, category, start: event.offsetSeconds, end: event.offsetSeconds + 0.5, gap: event.offsetSeconds - previous.end, immune: true }];
+      });
+    return [...reducedApplications, ...immuneAttempts];
+  }).sort((first, second) => first.start - second.start);
+}
+
+function isPvpTrinket(event: TimelineEvent): boolean {
+  return event.spellId === 336126 || event.spellId === 208683 || event.spellId === 42292 || event.spell.toLowerCase().includes("gladiator's medallion");
+}
+
+function ccChains(intervals: CcInterval[], trinkets: TimelineEvent[]): CcChain[] {
+  const chains: CcChain[] = [];
+  intervals.forEach((interval) => {
+    const current = chains.at(-1);
+    const interruptedBeforeNextCc = current && trinkets.some((trinket) => trinket.offsetSeconds >= current.start && trinket.offsetSeconds <= interval.start);
+    if (current && interval.start <= current.end && !interruptedBeforeNextCc) {
+      current.end = Math.max(current.end, interval.end);
+      current.totalDuration = Math.max(0, current.end - current.start);
+      current.exactDuration = current.exactDuration && interval.exactDuration;
+    } else chains.push({ start: interval.start, end: interval.end, totalDuration: Math.max(0, interval.end - interval.start), exactDuration: interval.exactDuration, trinket: null });
+  });
+  chains.forEach((chain) => {
+    chain.trinket = trinkets.find((trinket) => trinket.offsetSeconds >= chain.start && trinket.offsetSeconds <= chain.end + 1) ?? null;
+  });
+  return chains;
+}
+
+function formatCcDuration(seconds: number): string {
+  const rounded = Math.round(seconds * 10) / 10;
+  return `${Number.isInteger(rounded) ? rounded.toFixed(0) : rounded.toFixed(1)}s`;
+}
+
 function resultLabel(match: ArenaMatch): string {
   return match.playerWins == null || match.playerLosses == null
     ? match.result
@@ -150,9 +337,13 @@ function belongsToCategory(match: ArenaMatch, category: MatchCategory): boolean 
 }
 
 function formatDuration(totalSeconds: number): string {
-  const minutes = Math.floor(totalSeconds / 60);
-  const seconds = totalSeconds % 60;
-  return `${minutes}:${seconds.toString().padStart(2, "0")}`;
+  const roundedTotal = Math.max(0, Math.round(totalSeconds * 10) / 10);
+  const minutes = Math.floor(roundedTotal / 60);
+  const seconds = roundedTotal - minutes * 60;
+  const secondsText = Number.isInteger(seconds)
+    ? seconds.toFixed(0).padStart(2, "0")
+    : seconds.toFixed(1).padStart(4, "0");
+  return `${minutes}:${secondsText}`;
 }
 
 function formatDate(value: string): string {
@@ -187,6 +378,17 @@ function healthBarStyle(healthAfter: number, maxHealth: number): CSSProperties {
 function SpellIcon({ spellId, name, size = 28, showTitle = true }: { spellId: number; name?: string | null; size?: number; showTitle?: boolean }) {
   const resolvedId = spellId > 0 ? spellId : 6603;
   return <img className="spell-icon" src={`https://images.wowarenalogs.com/spells/${resolvedId}.jpg`} width={size} height={size} loading="lazy" alt="" title={showTitle ? name ?? "Unknown spell" : undefined} onError={(event) => { event.currentTarget.src = "https://images.wowarenalogs.com/spells/6603.jpg"; }} />;
+}
+
+function TimelineEventIcon({ event }: { event: TimelineEvent }) {
+  return event.eventType === "UNIT_DIED"
+    ? <span className="death-icon" aria-hidden="true">☠</span>
+    : <SpellIcon spellId={event.spellId} name={event.spell} size={32} showTitle={false} />;
+}
+
+function timelineEventDescription(event: TimelineEvent, relatedEvents: TimelineEvent[], participants: ParticipantDetails[]): string {
+  if (event.eventType === "UNIT_DIED") return `${event.target ?? event.source} died at ${formatDuration(event.offsetSeconds)}`;
+  return `${event.spell} → ${timelineTargetsLabel(event, relatedEvents, participants)}`;
 }
 
 function BattleNetIcon({ type, id, name, region, size = 38 }: { type: "item" | "spell"; id?: number; name?: string; region: string; size?: number }) {
@@ -379,9 +581,10 @@ function DeathRecapSection({ recaps }: { recaps: DeathRecap[] }) {
 }
 
 function CooldownTimeline({ events, relatedEvents = events, duration, playerTeam, participants, title = "Cooldown timeline", eyebrow = "Midnight 12.1 important spells" }: { events: TimelineEvent[]; relatedEvents?: TimelineEvent[]; duration: number; playerTeam: number | null; participants: ParticipantDetails[]; title?: string; eyebrow?: string }) {
-  const rows = Array.from({ length: Math.ceil(events.length / 20) }, (_, index) => {
-    const rowEvents = events.slice(index * 20, index * 20 + 20);
-    const startSeconds = index === 0 ? 0 : events[index * 20 - 1].offsetSeconds;
+  const visibleEvents = events.filter((event) => event.eventType !== "SPELL_AURA_REMOVED");
+  const rows = Array.from({ length: Math.ceil(visibleEvents.length / 20) }, (_, index) => {
+    const rowEvents = visibleEvents.slice(index * 20, index * 20 + 20);
+    const startSeconds = index === 0 ? 0 : visibleEvents[index * 20 - 1].offsetSeconds;
     const endSeconds = rowEvents.length === 20
       ? rowEvents[rowEvents.length - 1].offsetSeconds
       : duration;
@@ -390,18 +593,26 @@ function CooldownTimeline({ events, relatedEvents = events, duration, playerTeam
   });
   return (
     <section className="timeline-panel">
-      <div className="timeline-heading"><div><p className="eyebrow">{eyebrow}</p><h3>{title}</h3></div><span>{events.length} events</span></div>
-      {events.length === 0 ? <p className="timeline-empty">No tracked cooldowns were used in this match.</p> : (
+      <div className="timeline-heading"><div><p className="eyebrow">{eyebrow}</p><h3>{title}</h3></div><span>{visibleEvents.length} events</span></div>
+      {visibleEvents.length === 0 ? <p className="timeline-empty">No tracked cooldowns were used in this match.</p> : (
         <div className="timeline-rows">
           {rows.map((row, rowIndex) => (
             <div className="timeline-track" key={rowIndex}>
               <span className="timeline-team-label team-one">{playerTeam == null ? "Team 1" : "Same team"}</span><span className="timeline-team-label team-two">{playerTeam == null ? "Team 2" : "Opponents"}</span>
               <div className="timeline-axis"><span>{formatDuration(row.startSeconds)}</span><span>{formatDuration(row.endSeconds)}</span></div>
-              {row.events.map((event, index) => (
-                <button className={`timeline-event ${event.category.toLowerCase()} team-${playerTeam == null ? (event.team ?? 0) : event.team === playerTeam ? 0 : 1}`} style={{ left: `${row.endSeconds > row.startSeconds ? Math.min(100, Math.max(0, ((event.offsetSeconds - row.startSeconds) / (row.endSeconds - row.startSeconds)) * 100)) : 0}%` }} key={`${event.offsetSeconds}-${event.spellId}-${index}`} data-tooltip={`${event.spell} → ${timelineTargetsLabel(event, relatedEvents, participants)}`} aria-label={`${event.spell} affected ${timelineTargetsLabel(event, relatedEvents, participants)} at ${formatDuration(event.offsetSeconds)}, used by ${event.source}`}>
-                  <SpellIcon spellId={event.spellId} name={event.spell} size={32} showTitle={false} />
-                </button>
-              ))}
+              {row.events.map((event, index) => {
+                const sideFor = (candidate: TimelineEvent) => {
+                  const sourceTeam = timelineEventTeam(candidate, participants);
+                  return playerTeam == null ? (sourceTeam ?? 0) : sourceTeam === playerTeam ? 0 : 1;
+                };
+                const side = sideFor(event);
+                const left = `${row.endSeconds > row.startSeconds ? Math.min(100, Math.max(0, ((event.offsetSeconds - row.startSeconds) / (row.endSeconds - row.startSeconds)) * 100)) : 0}%`;
+                const stackIndex = timelineStackIndex(row.events, index, sideFor);
+                const description = timelineEventDescription(event, relatedEvents, participants);
+                return <button className={`timeline-event ${event.category.toLowerCase()} team-${side}`} style={timelineEventStyle(left, stackIndex)} key={`${event.offsetSeconds}-${event.spellId}-${index}`} data-tooltip={description} aria-label={description}>
+                  <TimelineEventIcon event={event} />
+                </button>;
+              })}
             </div>
           ))}
         </div>
@@ -410,13 +621,187 @@ function CooldownTimeline({ events, relatedEvents = events, duration, playerTeam
   );
 }
 
-function PlayerTimeline({ player, events, duration, participants }: { player: ParticipantDetails; events: TimelineEvent[]; duration: number; participants: ParticipantDetails[] }) {
-  const personalEvents = deduplicateTimelineEvents(events.filter((event) =>
-      (event.source === player.name && (event.eventType === "SPELL_CAST_SUCCESS" || event.eventType === "SPELL_AURA_APPLIED")) ||
-      (event.target === player.name && event.eventType === "SPELL_AURA_APPLIED")
-    ));
+function personalTimelineEvents(player: ParticipantDetails, events: TimelineEvent[]): TimelineEvent[] {
+  return deduplicateTimelineEvents(events.filter((event) =>
+    (event.eventType === "UNIT_DIED" && event.target === player.name) ||
+    (event.source === player.name && (event.eventType === "SPELL_CAST_SUCCESS" || event.eventType === "SPELL_AURA_APPLIED")) ||
+    (event.target === player.name && event.eventType === "SPELL_AURA_APPLIED")
+  ));
+}
 
-  return <CooldownTimeline events={deduplicateTimelineEvents(personalEvents)} relatedEvents={events} duration={duration} playerTeam={player.team} participants={participants} title={`${player.name}'s timeline`} eyebrow="Used and received important spells" />;
+function PlayerTimeline({ player, events, duration, participants }: { player: ParticipantDetails; events: TimelineEvent[]; duration: number; participants: ParticipantDetails[] }) {
+  const personalEvents = personalTimelineEvents(player, events);
+
+  return <CooldownTimeline events={personalEvents} relatedEvents={events} duration={duration} playerTeam={player.team} participants={participants} title={`${player.name}'s timeline`} eyebrow="Used and received important spells" />;
+}
+
+function ComparisonTimeline({ players, events, duration, participants, playerTeam }: { players: ParticipantDetails[]; events: TimelineEvent[]; duration: number; participants: ParticipantDetails[]; playerTeam: number | null }) {
+  const windows = Array.from({ length: Math.max(1, Math.ceil(duration / 30)) }, (_, index) => ({ start: index * 30, end: index * 30 + 30 }));
+  return <section className="timeline-panel comparison-timeline">
+    <div className="timeline-heading"><div><p className="eyebrow">Synchronized 30-second windows</p><h3>Player timeline comparison</h3></div><span>{players.length} selected</span></div>
+    {players.length === 0 ? <p className="timeline-empty">Select one or more characters to compare their timelines.</p> : <div className="comparison-windows">
+      {windows.map((window) => <section className="comparison-window" key={window.start}>
+        <header><strong>{formatDuration(window.start)}–{formatDuration(window.end)}</strong><span>All selected players · same time scale</span></header>
+        {players.map((player) => {
+          const personalEvents = personalTimelineEvents(player, events).filter((event) => event.offsetSeconds >= window.start && event.offsetSeconds < window.end);
+          const onYourTeam = playerTeam != null && player.team === playerTeam;
+          return <div className="comparison-player-row" key={`${window.start}-${player.guid}`}>
+            <div className="comparison-player-label"><span className={`team-affiliation ${onYourTeam ? "yours" : "enemy"}`}>{onYourTeam ? "Your team" : "Opponent"}</span><strong>{player.name}</strong><small>{player.specializationName} {player.className}</small></div>
+            <div className="timeline-track comparison-track">
+              <span className="timeline-team-label team-one">Ally used</span><span className="timeline-team-label team-two">Enemy used</span>
+              <div className="timeline-axis"><span>{formatDuration(window.start)}</span><span>{formatDuration(window.end)}</span></div>
+              {personalEvents.map((event, index) => {
+                const ally = player.team != null && timelineEventTeam(event, participants) === player.team;
+                const sideFor = (candidate: TimelineEvent) => player.team != null && timelineEventTeam(candidate, participants) === player.team ? 0 : 1;
+                const stackIndex = timelineStackIndex(personalEvents, index, sideFor);
+                const left = `${Math.min(100, Math.max(0, ((event.offsetSeconds - window.start) / 30) * 100))}%`;
+                const description = timelineEventDescription(event, events, participants);
+                return <button className={`timeline-event ${event.category.toLowerCase()} team-${ally ? 0 : 1}`} style={timelineEventStyle(left, stackIndex)} key={`${event.offsetSeconds}-${event.spellId}-${index}`} data-tooltip={description} aria-label={description}>
+                  <TimelineEventIcon event={event} />
+                </button>;
+              })}
+            </div>
+          </div>;
+        })}
+      </section>)}
+    </div>}
+  </section>;
+}
+
+function DefensiveOverlapWarnings({ overlaps }: { overlaps: DefensiveOverlap[] }) {
+  if (overlaps.length === 0) return null;
+  return <div className="timeline-warning-list">
+    <strong><span>!</span> Defensive overlaps</strong>
+    {overlaps.map((overlap, index) => <div className="timeline-warning-row" key={`${overlap.target}-${overlap.start}-${index}`}>
+      <span className="warning-spell-icons"><SpellIcon spellId={overlap.firstSpellId} name={overlap.first} size={24} /><SpellIcon spellId={overlap.secondSpellId} name={overlap.second} size={24} /></span>
+      <p><b>{overlap.target}</b> · {overlap.first} + {overlap.second}<small>{formatCcDuration(overlap.end - overlap.start)} overlap at {formatDuration(overlap.start)}</small></p>
+    </div>)}
+  </div>;
+}
+
+function DrOverlapTimeline({ overlaps, duration, playerTeam }: { overlaps: DrOverlap[]; duration: number; playerTeam: number | null }) {
+  const activeWindowStarts = [...new Set(overlaps.map((overlap) => Math.floor(overlap.start / 30) * 30))];
+
+  return <section className="timeline-panel dr-overlap-panel">
+    <div className="timeline-heading"><div><p className="eyebrow">Repeated CC inside the DR reset window</p><h3>DR overlap timeline</h3></div><span>{overlaps.length} DR issues</span></div>
+    {overlaps.length === 0 ? <p className="timeline-empty">No repeated or immune crowd control inside an active DR window was found.</p> : <div className="cc-windows dr-overlap-windows">
+      {activeWindowStarts.map((windowStart) => {
+        const windowEnd = Math.min(windowStart + 30, duration);
+        const windowOverlaps = overlaps.filter((overlap) => overlap.end > windowStart && overlap.start < windowStart + 30);
+        const targets = [...new Map(windowOverlaps.map((overlap) => [overlap.target.guid, overlap.target])).values()];
+        return <section className="cc-window" key={windowStart}>
+          <header><strong>{formatDuration(windowStart)}–{formatDuration(windowStart + 30)}</strong><span>DR issues only</span></header>
+          {targets.map((target) => {
+            const yourTeam = playerTeam != null && target.team === playerTeam;
+            const targetOverlaps = windowOverlaps.filter((overlap) => overlap.target.guid === target.guid);
+            return <div className="cc-healer-row dr-overlap-row" key={`${windowStart}-${target.guid}`}>
+              <div className="comparison-player-label"><span className={`team-affiliation ${yourTeam ? "yours" : "enemy"}`}>{yourTeam ? "Your team" : "Opponent"}</span><strong>{target.name}</strong><small>{target.specializationName} {target.className}</small></div>
+              <div className="dr-overlap-track">
+                <div className="cc-axis"><span>{formatDuration(windowStart)}</span><span>{formatDuration(windowEnd)}</span></div>
+                {targetOverlaps.map((overlap, index) => {
+                  const start = Math.max(windowStart, overlap.start);
+                  const end = Math.min(windowStart + 30, overlap.end);
+                  const relation = overlap.immune ? "Immune" : overlap.gap < 0 ? `${formatCcDuration(Math.abs(overlap.gap))} duration overlap` : `${formatCcDuration(overlap.gap)} after previous CC ended`;
+                  const description = `${overlap.first} → ${overlap.second} on ${target.name} · ${relation} · ${overlap.category} DR at ${formatDuration(overlap.start)}`;
+                  return <button className={`dr-overlap-marker ${overlap.immune ? "immune" : ""}`} style={{ left: `${((start - windowStart) / 30) * 100}%`, width: `${Math.max(3, ((end - start) / 30) * 100)}%`, top: `${8 + index * 7}px` }} data-tooltip={description} aria-label={description} key={`${overlap.start}-${overlap.secondSpellId}-${index}`}>
+                    <span className="warning-spell-icons"><SpellIcon spellId={overlap.firstSpellId} name={overlap.first} size={22} showTitle={false} /><SpellIcon spellId={overlap.secondSpellId} name={overlap.second} size={22} showTitle={false} /></span>
+                    <b>{overlap.immune ? "IMMUNE" : "DR"}</b>
+                  </button>;
+                })}
+              </div>
+            </div>;
+          })}
+        </section>;
+      })}
+    </div>}
+  </section>;
+}
+
+function HealerCcTimeline({ events, duration, participants, playerTeam }: { events: TimelineEvent[]; duration: number; participants: ParticipantDetails[]; playerTeam: number | null }) {
+  const healers = participants.filter((player) => healerSpecializations.has(player.specializationName));
+  const windows = Array.from({ length: Math.max(1, Math.ceil(duration / 30)) }, (_, index) => ({ start: index * 30, end: index * 30 + 30 }));
+  const data = new Map(healers.map((healer) => {
+    const intervals = healerCcIntervals(healer, events, duration);
+    const trinkets = deduplicateTimelineEvents(events).filter((event) => event.source === healer.name && isPvpTrinket(event));
+    const deaths = deduplicateTimelineEvents(events).filter((event) => {
+      if (event.eventType !== "UNIT_DIED") return false;
+      const deadPlayer = participants.find((player) => player.name === (event.target ?? event.source));
+      return deadPlayer != null && deadPlayer.team === healer.team;
+    });
+    return [healer.guid, { intervals, chains: ccChains(intervals, trinkets), trinkets, deaths }];
+  }));
+  const drFollowups = Array.from(data.values()).reduce((total, healerData) => total + healerData.intervals.filter((interval) => interval.drGap != null).length, 0);
+  const drIssues = healers.flatMap((healer) => (data.get(healer.guid)?.intervals ?? []).filter((interval) => interval.drGap != null).map((interval) => ({ healer, interval })));
+
+  return <section className="timeline-panel cc-timeline-panel">
+    <div className="timeline-heading"><div><p className="eyebrow">Crowd control duration and overlap</p><h3>CC/chains on healers</h3></div><span>{drFollowups > 0 ? `! ${drFollowups} DR follow-ups` : `${healers.length} healers`}</span></div>
+    {drIssues.length > 0 && <div className="timeline-warning-list dr-warning-list">
+      <strong><span>!</span> DR issues</strong>
+      {drIssues.map(({ healer, interval }, index) => {
+        const timing = interval.drGap! < 0 ? `${formatCcDuration(Math.abs(interval.drGap!))} overlap` : interval.drGap === 0 ? "No gap" : `${formatCcDuration(interval.drGap!)} gap`;
+        return <div className="timeline-warning-row" key={`${healer.guid}-${interval.start}-${index}`}>
+          <span className="warning-spell-icons"><SpellIcon spellId={interval.previousDrSpellId ?? 0} name={interval.previousDrSpell} size={24} /><SpellIcon spellId={interval.spellId} name={interval.spell} size={24} /></span>
+          <p><b>{healer.name}</b> · {interval.previousDrSpell} → {interval.spell}<small>{timing} · {interval.drCategory} DR · second CC at {formatDuration(interval.start)}</small></p>
+        </div>;
+      })}
+    </div>}
+    {healers.length === 0 ? <p className="timeline-empty">No healer specialization was identified in this match.</p> : <div className="cc-windows">
+      {windows.map((window) => <section className="cc-window" key={window.start}>
+        <header><strong>{formatDuration(window.start)}–{formatDuration(window.end)}</strong><span>30-second comparison</span></header>
+        {healers.map((healer) => {
+          const healerData = data.get(healer.guid)!;
+          const yourHealer = playerTeam != null && healer.team === playerTeam;
+          const visibleIntervals = healerData.intervals.filter((interval) => interval.end > window.start && interval.start < window.end);
+          const visibleChains = healerData.chains.filter((chain) => chain.end > window.start && chain.start < window.end);
+          const laneCount = Math.max(1, ...visibleIntervals.map((interval) => interval.lane + 1));
+          return <div className="cc-healer-row" key={`${window.start}-${healer.guid}`}>
+            <div className="comparison-player-label"><span className={`team-affiliation ${yourHealer ? "yours" : "enemy"}`}>{yourHealer ? "Your healer" : "Enemy healer"}</span><strong>{healer.name}</strong><small>{healer.specializationName} {healer.className}</small></div>
+            <div className="cc-track" style={{ height: `${70 + (laneCount - 1) * 25}px` }}>
+              <div className="cc-chain-layer">
+                {visibleChains.map((chain, index) => {
+                  const start = Math.max(window.start, chain.start); const end = Math.min(window.end, chain.end);
+                  const chainLabel = chain.exactDuration ? `${formatCcDuration(chain.totalDuration)} chain` : "chain duration unavailable";
+                  return <span className={`cc-chain-span ${chain.trinket ? "trinketed" : ""}`} style={{ left: `${((start - window.start) / 30) * 100}%`, width: `${Math.max(1, ((end - start) / 30) * 100)}%` }} key={`${chain.start}-${index}`}><b>{chainLabel}{chain.trinket ? " · trinketed" : ""}</b></span>;
+                })}
+              </div>
+              {visibleIntervals.filter((interval) => interval.previousDrEnd != null && interval.drGap != null).map((interval, index) => {
+                const relationStart = Math.min(interval.previousDrEnd!, interval.start); const relationEnd = Math.max(interval.previousDrEnd!, interval.start);
+                if (relationEnd < window.start || relationStart >= window.end) return null;
+                const start = Math.max(window.start, relationStart); const end = Math.min(window.end, relationEnd);
+                const overlap = interval.drGap! < 0;
+                const relationLabel = overlap ? `${formatCcDuration(Math.abs(interval.drGap!))} overlap · ${interval.drCategory} DR refreshed` : interval.drGap === 0 ? `Immediate ${interval.drCategory} DR refresh` : `${formatCcDuration(interval.drGap!)} gap · ${interval.drCategory} DR refreshed`;
+                return <span className={`cc-dr-link ${overlap ? "overlap" : "gap"}`} style={{ left: `${((start - window.start) / 30) * 100}%`, width: `${Math.max(1.2, ((end - start) / 30) * 100)}%` }} data-tooltip={relationLabel} key={`${interval.start}-${interval.drCategory}-${index}`}><b>{relationLabel}</b></span>;
+              })}
+              {visibleIntervals.map((interval, index) => {
+                const start = Math.max(window.start, interval.start); const end = Math.min(window.end, interval.end);
+                const durationLabel = interval.exactDuration ? formatCcDuration(interval.end - interval.start) : "duration unavailable";
+                return <button className="cc-duration-bar" style={{ left: `${((start - window.start) / 30) * 100}%`, width: `${Math.max(1.4, ((end - start) / 30) * 100)}%`, top: `${30 + interval.lane * 25}px` }} data-tooltip={`${interval.spell} from ${interval.source} · ${durationLabel} · ${interval.drCategory} DR`} aria-label={`${interval.spell} on ${healer.name} from ${formatDuration(interval.start)} to ${interval.exactDuration ? formatDuration(interval.end) : "unknown"}, ${interval.drCategory} DR`} key={`${interval.start}-${interval.spellId}-${index}`}>
+                  <SpellIcon spellId={interval.spellId} name={interval.spell} size={18} showTitle={false} /><span>{interval.spell}</span><b>{interval.exactDuration ? formatCcDuration(interval.end - interval.start) : "?"}</b>
+                </button>;
+              })}
+              {healerData.trinkets.filter((trinket) => trinket.offsetSeconds >= window.start && trinket.offsetSeconds < window.end).map((trinket, index) => {
+                const breaksChain = healerData.chains.some((chain) => chain.trinket === trinket);
+                const description = `Gladiator's Medallion used by ${healer.name} at ${formatDuration(trinket.offsetSeconds)}${breaksChain ? " · CC chain interrupted" : ""}`;
+                return <button className={`cc-trinket-marker ${breaksChain ? "breaks-chain" : ""}`} style={{ left: `${((trinket.offsetSeconds - window.start) / 30) * 100}%` }} data-tooltip={description} aria-label={description} key={`${trinket.offsetSeconds}-${index}`}>
+                  <SpellIcon spellId={trinket.spellId} name={trinket.spell} size={20} showTitle={false} />
+                </button>;
+              })}
+              {healerData.deaths.filter((death) => death.offsetSeconds >= window.start && (death.offsetSeconds < window.end || window.end >= duration)).map((death, index) => {
+                const deadPlayer = participants.find((player) => player.name === (death.target ?? death.source));
+                const deadLabel = deadPlayer ? `${deadPlayer.specializationName} ${deadPlayer.className}` : death.target ?? death.source;
+                const description = `${deadLabel} death at ${formatDuration(death.offsetSeconds)}`;
+                const position = Math.min(98, Math.max(2, ((death.offsetSeconds - window.start) / 30) * 100));
+                return <button className="cc-death-marker" style={{ left: `${position}%` }} data-tooltip={description} aria-label={description} key={`${death.offsetSeconds}-${death.target}-${index}`}>
+                  <span aria-hidden="true">☠</span><b>{deadLabel} death</b>
+                </button>;
+              })}
+              <div className="cc-axis"><span>{formatDuration(window.start)}</span><span>{formatDuration(window.end)}</span></div>
+            </div>
+          </div>;
+        })}
+      </section>)}
+    </div>}
+  </section>;
 }
 
 function PlayerCard({ player, timelineOpen, onToggleTimeline }: { player: ParticipantDetails; timelineOpen: boolean; onToggleTimeline: () => void }) {
@@ -449,12 +834,18 @@ function App() {
   const [matches, setMatches] = useState<ArenaMatch[]>([]);
   const [loading, setLoading] = useState(true);
   const [importing, setImporting] = useState(false);
+  const [reimporting, setReimporting] = useState(false);
   const [shuttingDown, setShuttingDown] = useState(false);
   const [stopped, setStopped] = useState(false);
   const [selectedMatch, setSelectedMatch] = useState<ArenaMatch | null>(null);
   const [matchDetails, setMatchDetails] = useState<MatchDetails | null>(null);
   const [selectedRound, setSelectedRound] = useState(1);
   const [timelinePlayerGuid, setTimelinePlayerGuid] = useState<string | null>(null);
+  const [healerCcTimelineOpen, setHealerCcTimelineOpen] = useState(false);
+  const [drOverlapTimelineOpen, setDrOverlapTimelineOpen] = useState(false);
+  const [matchTimelineOpen, setMatchTimelineOpen] = useState(false);
+  const [comparisonTimelineOpen, setComparisonTimelineOpen] = useState(false);
+  const [comparisonPlayerGuids, setComparisonPlayerGuids] = useState<string[]>([]);
   const [detailsLoading, setDetailsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -582,6 +973,24 @@ function App() {
     }
   }
 
+  async function reimportAllLogs() {
+    setReimporting(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const response = await fetch("/api/combat-log/reimport-all-arena-matches", { method: "POST" });
+      if (response.status === 404) throw new Error("The backend is still running an older version. Restart ArenaParser, then try Reimport all logs again.");
+      if (!response.ok) throw new Error(`The reimport failed with status ${response.status}`);
+      const result = (await response.json()) as ImportResponse;
+      setNotice(`${result.detectedMatches} matches refreshed from all combat logs${result.importedMatches > 0 ? `, including ${result.importedMatches} new` : ""}.`);
+      await loadMatches();
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "Unknown error");
+    } finally {
+      setReimporting(false);
+    }
+  }
+
   async function shutDownApplication() {
     if (!window.confirm("Shut down ArenaParser, including the database?")) return;
 
@@ -602,6 +1011,11 @@ function App() {
     setSelectedMatch(match);
     setSelectedRound(1);
     setTimelinePlayerGuid(null);
+    setHealerCcTimelineOpen(false);
+    setDrOverlapTimelineOpen(false);
+    setMatchTimelineOpen(false);
+    setComparisonTimelineOpen(false);
+    setComparisonPlayerGuids([]);
     setMatchDetails(null);
     setDetailsLoading(true);
     try {
@@ -636,9 +1050,16 @@ function App() {
   const detailParticipants = activeRound?.participants ?? matchDetails?.participants ?? [];
   const detailWinningTeam = activeRound?.winningTeam ?? selectedMatch?.winningTeam;
   const detailPlayerTeam = activeRound?.playerTeam ?? selectedMatch?.playerTeam ?? null;
-  const detailTimeline = activeRound?.timeline ?? matchDetails?.timeline ?? [];
+  const detailTimeline = timelineWithStoredDeaths(activeRound?.timeline ?? matchDetails?.timeline ?? [], detailParticipants);
   const detailDuration = activeRound?.durationSeconds ?? selectedMatch?.durationSeconds ?? 0;
+  const detailDefensiveOverlaps = defensiveOverlaps(detailTimeline);
+  const detailDrOverlaps = drOverlaps(detailParticipants, detailTimeline, detailDuration);
+  const detailDrFollowups = detailParticipants.filter((player) => healerSpecializations.has(player.specializationName))
+    .reduce((total, healer) => total + healerCcIntervals(healer, detailTimeline, detailDuration).filter((interval) => interval.drGap != null).length, 0);
+  const yourTeamParticipants = detailParticipants.filter((player) => detailPlayerTeam != null && player.team === detailPlayerTeam);
+  const opponentParticipants = detailParticipants.filter((player) => detailPlayerTeam == null || player.team !== detailPlayerTeam);
   const timelinePlayer = detailParticipants.find((player) => player.guid === timelinePlayerGuid) ?? null;
+  const comparisonPlayers = comparisonPlayerGuids.map((guid) => detailParticipants.find((player) => player.guid === guid)).filter((player): player is ParticipantDetails => player != null);
   const detailTeams = [0, 1].map((team) => detailParticipants.filter((player) => player.team === team));
   const playerRowCount = Math.max(...detailTeams.map((team) => team.length), 0);
   const timelinePlayerRow = timelinePlayer?.team == null ? -1 : detailTeams[timelinePlayer.team]?.findIndex((player) => player.guid === timelinePlayer.guid) ?? -1;
@@ -669,6 +1090,9 @@ function App() {
         <div className="hero-actions">
           <button className="primary-button" onClick={importLatestLog} disabled={importing}>
             {importing ? "Importing…" : "Import latest log"}
+          </button>
+          <button className="secondary-button" onClick={reimportAllLogs} disabled={importing || reimporting} title="Refresh existing matches from every WoWCombatLog file">
+            {reimporting ? "Reimporting…" : "Reimport all logs"}
           </button>
           <button className="secondary-button" onClick={() => void loadMatches()} disabled={loading}>Refresh</button>
         </div>
@@ -771,7 +1195,7 @@ function App() {
                       <button
                         className={`${round.result.toLowerCase()} ${selectedRound === round.roundNumber ? "active" : ""}`}
                         key={round.roundNumber}
-                        onClick={() => { setSelectedRound(round.roundNumber); setTimelinePlayerGuid(null); }}
+                        onClick={() => { setSelectedRound(round.roundNumber); setTimelinePlayerGuid(null); setComparisonPlayerGuids([]); }}
                       >
                         <span>Round {round.roundNumber}</span>
                         <strong>{round.result}</strong>
@@ -779,7 +1203,42 @@ function App() {
                     ))}
                   </nav>
                 )}
-                <CooldownTimeline events={deduplicateTimelineEvents(detailTimeline)} relatedEvents={detailTimeline} duration={detailDuration} playerTeam={detailPlayerTeam} participants={detailParticipants} />
+                <section className="timeline-controls comparison-controls">
+                  <button className={`timeline-toggle ${comparisonTimelineOpen ? "active" : ""}`} onClick={() => setComparisonTimelineOpen((open) => !open)} aria-expanded={comparisonTimelineOpen}>
+                    <span><small>Optional comparison</small><strong>Compare player timelines</strong></span><span className="timeline-toggle-status">{detailDefensiveOverlaps.length > 0 && <em className="mistake-badge">! {detailDefensiveOverlaps.length}</em>}<b>{comparisonTimelineOpen ? "Hide" : "Show"}</b></span>
+                  </button>
+                  {comparisonTimelineOpen && <>
+                    <div className="comparison-player-picker" role="group" aria-label="Characters to compare">
+                      {[{ title: "Your team", players: yourTeamParticipants, className: "yours" }, { title: "Opponent team", players: opponentParticipants, className: "enemy" }].map((group) => <section className={`comparison-team-group ${group.className}`} key={group.title}>
+                        <header><span>{group.title}</span><b>{group.players.length}</b></header>
+                        <div>{group.players.map((player) => <label className={comparisonPlayerGuids.includes(player.guid) ? "selected" : ""} key={player.guid}>
+                          <input type="checkbox" checked={comparisonPlayerGuids.includes(player.guid)} onChange={() => setComparisonPlayerGuids((current) => current.includes(player.guid) ? current.filter((guid) => guid !== player.guid) : [...current, player.guid])} />
+                          <span><strong>{player.name}</strong><small>{player.specializationName} {player.className}</small></span>
+                        </label>)}</div>
+                      </section>)}
+                    </div>
+                    <DefensiveOverlapWarnings overlaps={detailDefensiveOverlaps} />
+                    <ComparisonTimeline players={comparisonPlayers} events={detailTimeline} duration={detailDuration} participants={detailParticipants} playerTeam={detailPlayerTeam} />
+                  </>}
+                </section>
+                <section className="timeline-controls cc-controls">
+                  <button className={`timeline-toggle ${healerCcTimelineOpen ? "active" : ""}`} onClick={() => setHealerCcTimelineOpen((open) => !open)} aria-expanded={healerCcTimelineOpen}>
+                    <span><small>Healer crowd control</small><strong>CC/chains on healers</strong></span><span className="timeline-toggle-status">{detailDrFollowups > 0 && <em className="mistake-badge">! {detailDrFollowups}</em>}<b>{healerCcTimelineOpen ? "Hide" : "Show"}</b></span>
+                  </button>
+                  {healerCcTimelineOpen && <HealerCcTimeline events={detailTimeline} duration={detailDuration} participants={detailParticipants} playerTeam={detailPlayerTeam} />}
+                </section>
+                <section className="timeline-controls dr-overlap-controls">
+                  <button className={`timeline-toggle ${drOverlapTimelineOpen ? "active" : ""}`} onClick={() => setDrOverlapTimelineOpen((open) => !open)} aria-expanded={drOverlapTimelineOpen}>
+                    <span><small>Repeated crowd control</small><strong>DR overlap timeline</strong></span><span className="timeline-toggle-status"><em className={`mistake-badge ${detailDrOverlaps.length === 0 ? "clear" : ""}`}>{detailDrOverlaps.length > 0 ? `! ${detailDrOverlaps.length}` : "0 issues"}</em><b>{drOverlapTimelineOpen ? "Hide" : "Show"}</b></span>
+                  </button>
+                  {drOverlapTimelineOpen && <DrOverlapTimeline overlaps={detailDrOverlaps} duration={detailDuration} playerTeam={detailPlayerTeam} />}
+                </section>
+                <section className="timeline-controls match-timeline-controls">
+                  <button className={`timeline-toggle ${matchTimelineOpen ? "active" : ""}`} onClick={() => setMatchTimelineOpen((open) => !open)} aria-expanded={matchTimelineOpen}>
+                    <span><small>All players</small><strong>Match cooldown timeline</strong></span><span className="timeline-toggle-status">{detailDefensiveOverlaps.length > 0 && <em className="mistake-badge">! {detailDefensiveOverlaps.length}</em>}<b>{matchTimelineOpen ? "Hide" : "Show"}</b></span>
+                  </button>
+                  {matchTimelineOpen && <><DefensiveOverlapWarnings overlaps={detailDefensiveOverlaps} /><CooldownTimeline events={deduplicateTimelineEvents(detailTimeline)} relatedEvents={detailTimeline} duration={detailDuration} playerTeam={detailPlayerTeam} participants={detailParticipants} /></>}
+                </section>
                 <div className="detail-summary">
                   <div><span>Players</span><strong>{detailParticipants.length}</strong></div>
                   <div><span>Total damage</span><strong>{formatNumber(detailParticipants.reduce((sum, player) => sum + player.damage, 0))}</strong></div>

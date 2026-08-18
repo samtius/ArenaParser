@@ -11,6 +11,7 @@ import java.io.IOException;
 import java.nio.file.Path;
 import java.nio.file.Files;
 import java.util.Comparator;
+import java.util.ArrayList;
 import java.util.List;
 
 @Service
@@ -38,6 +39,22 @@ public class CombatLogImportService {
 
     public List<DetectedArenaMatch> detectArenaMatches() throws IOException {
         return arenaMatchDetector.detect(resolveCombatLogPath());
+    }
+
+    public List<DetectedArenaMatch> detectArenaMatchesFromAllLogs() throws IOException {
+        if (combatLogPath == null) throw new IllegalStateException("Combat log path has not been configured");
+        if (!Files.isDirectory(combatLogPath)) return arenaMatchDetector.detect(combatLogPath);
+
+        var matches = new ArrayList<DetectedArenaMatch>();
+        try (var files = Files.list(combatLogPath)) {
+            for (var path : files.filter(Files::isRegularFile)
+                    .filter(file -> file.getFileName().toString().startsWith("WoWCombatLog"))
+                    .filter(file -> file.getFileName().toString().endsWith(".txt"))
+                    .sorted().toList()) {
+                matches.addAll(arenaMatchDetector.detect(path));
+            }
+        }
+        return List.copyOf(matches);
     }
 
     public CombatLogState currentCombatLogState() throws IOException {

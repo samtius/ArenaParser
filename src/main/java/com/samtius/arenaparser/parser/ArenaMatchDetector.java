@@ -125,6 +125,7 @@ public class ArenaMatchDetector {
 
         private void addRound(ArenaStart round, MatchAccumulator accumulator, String boundaryTimestamp) {
             if (accumulator == null) return;
+            accumulator.finishPendingDeaths();
             var playerTeam = accumulator.playerTeam();
             var deadTeam = accumulator.deadTeam();
             Integer winningTeam = deadTeam == null ? null : deadTeam == 0 ? 1 : 0;
@@ -162,6 +163,8 @@ public class ArenaMatchDetector {
         private final Map<String, String> summonedPetNames = new LinkedHashMap<>();
         private final List<MatchCombatDetails.KeyEvent> events = new ArrayList<>();
         private final List<MatchCombatDetails.TimelineEvent> timeline = new ArrayList<>();
+        private final Map<String, PendingDeath> pendingDeaths = new LinkedHashMap<>();
+        private final Map<String, LocalDateTime> recentFeignDeaths = new LinkedHashMap<>();
         private String ownPlayerGuid;
         private String lastDeadGuid;
         private String lastDeathTimestamp;
@@ -169,6 +172,7 @@ public class ArenaMatchDetector {
         private MatchAccumulator(ArenaStart match) { this.match = match; }
 
         private void accept(CombatLogLine line) {
+            flushPendingDeaths(line.timestamp(), false);
             var fields = line.fields();
             var source = player(fields, 1, 2, 3);
             var sourceGuid = value(fields, 1);
@@ -218,6 +222,14 @@ public class ArenaMatchDetector {
                     if ("ABSORB".equals(value(fields, 12)) && source != null) {
                         source.addDamage(attributedSpellId, attributedSpellName, parseLong(fields, 14, 14), bool(fields, 16));
                     }
+                    if ("SPELL_MISSED".equals(line.eventType()) && "IMMUNE".equals(value(fields, 12))
+                            && source != null && target != null
+                            && "CROWD_CONTROL".equals(ImportantSpellCatalog.category(spellId, spellName))) {
+                        timeline.add(new MatchCombatDetails.TimelineEvent(
+                                timelineOffsetSeconds(line.timestamp()), spellId, spellName,
+                                "CROWD_CONTROL", source.name, source.team, target.name, line.eventType()
+                        ));
+                    }
                 }
                 case "SWING_MISSED" -> {
                     if ("ABSORB".equals(value(fields, 9)) && source != null) {
@@ -242,9 +254,10 @@ public class ArenaMatchDetector {
                 }
                 case "SPELL_CAST_SUCCESS" -> {
                     if (source != null) source.addCast(spellId, spellName);
+                    if (source != null && isFeignDeath(spellId, spellName)) registerFeignDeath(source.guid, line.timestamp());
                     if (source != null && ImportantSpellCatalog.isImportant(spellId, spellName)) {
                         timeline.add(new MatchCombatDetails.TimelineEvent(
-                                offsetSeconds(line.timestamp()), spellId, spellName,
+                                timelineOffsetSeconds(line.timestamp()), spellId, spellName,
                                 ImportantSpellCatalog.category(spellId, spellName), source.name,
                                 source.team,
                                 target == null ? null : target.name, line.eventType()
@@ -252,11 +265,20 @@ public class ArenaMatchDetector {
                     }
                 }
                 case "SPELL_AURA_APPLIED" -> {
+                    if (target != null && isFeignDeath(spellId, spellName)) registerFeignDeath(target.guid, line.timestamp());
                     if (source != null && target != null && ImportantSpellCatalog.isImportant(spellId, spellName)) {
                         timeline.add(new MatchCombatDetails.TimelineEvent(
-                                offsetSeconds(line.timestamp()), spellId, spellName,
+                                timelineOffsetSeconds(line.timestamp()), spellId, spellName,
                                 ImportantSpellCatalog.category(spellId, spellName), source.name,
                                 source.team, target.name, line.eventType()
+                        ));
+                    }
+                }
+                case "SPELL_AURA_REMOVED" -> {
+                    if (source != null && target != null && ImportantSpellCatalog.isImportant(spellId, spellName)) {
+                        timeline.add(new MatchCombatDetails.TimelineEvent(
+                                timelineOffsetSeconds(line.timestamp()), spellId, spellName,
+                                ImportantSpellCatalog.category(spellId, spellName), source.name, source.team, target.name, line.eventType()
                         ));
                     }
                 }
@@ -273,14 +295,52 @@ public class ArenaMatchDetector {
                     ));
                 }
                 case "UNIT_DIED" -> {
-                    if (target != null) {
-                        lastDeadGuid = target.guid;
-                        lastDeathTimestamp = line.timestamp();
-                        target.markDeath(line.timestamp(), match.timestamp());
-                    }
+                    if (target != null && !recentFeignDeath(target.guid, line.timestamp()))
+                        pendingDeaths.put(target.guid, new PendingDeath(target, line.timestamp()));
                 }
                 default -> { }
             }
+        }
+
+        private boolean isFeignDeath(long spellId, String spellName) {
+            return spellId == 5384 || "Feign Death".equalsIgnoreCase(spellName);
+        }
+
+        private void registerFeignDeath(String guid, String timestamp) {
+            var time = LocalDateTime.parse(timestamp, TIMESTAMP);
+            recentFeignDeaths.put(guid, time);
+            var pending = pendingDeaths.get(guid);
+            if (pending != null && Math.abs(Duration.between(pending.time(), time).toMillis()) <= 1500)
+                pendingDeaths.remove(guid);
+        }
+
+        private boolean recentFeignDeath(String guid, String timestamp) {
+            var feignTime = recentFeignDeaths.get(guid);
+            return feignTime != null && Math.abs(Duration.between(feignTime, LocalDateTime.parse(timestamp, TIMESTAMP)).toMillis()) <= 1500;
+        }
+
+        private void flushPendingDeaths(String timestamp, boolean all) {
+            var currentTime = LocalDateTime.parse(timestamp, TIMESTAMP);
+            var ready = pendingDeaths.entrySet().stream()
+                    .filter(entry -> all || Duration.between(entry.getValue().time(), currentTime).toMillis() > 1500)
+                    .map(Map.Entry::getKey).toList();
+            ready.forEach(guid -> confirmDeath(pendingDeaths.remove(guid)));
+        }
+
+        private void confirmDeath(PendingDeath death) {
+            if (death == null) return;
+            lastDeadGuid = death.player().guid;
+            lastDeathTimestamp = death.timestamp();
+            death.player().markDeath(death.timestamp(), match.timestamp());
+            timeline.add(new MatchCombatDetails.TimelineEvent(
+                    timelineOffsetSeconds(death.timestamp()), 0, "Died", "DEATH", death.player().name,
+                    death.player().team, death.player().name, "UNIT_DIED"
+            ));
+        }
+
+        private void finishPendingDeaths() {
+            pendingDeaths.values().stream().toList().forEach(this::confirmDeath);
+            pendingDeaths.clear();
         }
 
         private ParticipantBuilder player(List<String> fields, int guidIndex, int nameIndex, int flagsIndex) {
@@ -338,15 +398,32 @@ public class ArenaMatchDetector {
             catch (RuntimeException exception) { return 0; }
         }
 
+        private double timelineOffsetSeconds(String timestamp) {
+            try { return Duration.between(LocalDateTime.parse(match.timestamp(), TIMESTAMP), LocalDateTime.parse(timestamp, TIMESTAMP)).toMillis() / 1000.0; }
+            catch (RuntimeException exception) { return 0; }
+        }
+
         private MatchCombatDetails toDetails() {
+            finishPendingDeaths();
             var participantDetails = participants.values().stream()
                     .sorted(Comparator.comparing((ParticipantBuilder value) -> value.team, Comparator.nullsLast(Integer::compareTo)).thenComparing(value -> value.name))
                     .map(ParticipantBuilder::toDetails)
                     .toList();
-            return new MatchCombatDetails(participantDetails, List.copyOf(events), List.of(), List.copyOf(timeline));
+            return new MatchCombatDetails(participantDetails, List.copyOf(events), List.of(), timelineDetails());
         }
 
-        private List<MatchCombatDetails.TimelineEvent> timeline() { return List.copyOf(timeline); }
+        private List<MatchCombatDetails.TimelineEvent> timeline() {
+            finishPendingDeaths();
+            return timelineDetails();
+        }
+
+        private List<MatchCombatDetails.TimelineEvent> timelineDetails() {
+            return timeline.stream().sorted(Comparator.comparingDouble(MatchCombatDetails.TimelineEvent::offsetSeconds)).toList();
+        }
+
+        private record PendingDeath(ParticipantBuilder player, String timestamp) {
+            private LocalDateTime time() { return LocalDateTime.parse(timestamp, TIMESTAMP); }
+        }
 
         private static String value(List<String> fields, int index) { return index < fields.size() ? fields.get(index) : null; }
         private static boolean bool(List<String> fields, int index) { return "1".equals(value(fields, index)) || "true".equalsIgnoreCase(value(fields, index)); }

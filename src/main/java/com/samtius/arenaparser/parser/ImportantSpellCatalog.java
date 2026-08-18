@@ -20,7 +20,7 @@ public final class ImportantSpellCatalog {
             "Vanish", "Feint", "Fortifying Brew", "Touch of Karma", "Dampen Harm", "Diffuse Magic", "Life Cocoon", "Astral Shift",
             "Spirit Link Totem", "Healing Tide Totem", "Aspect of the Turtle", "Survival of the Fittest", "Exhilaration", "Blur", "Darkness",
             "Netherwalk", "Unending Resolve", "Dark Pact", "Anti-Magic Shell", "Icebound Fortitude", "Lichborne", "Death Pact",
-            "Obsidian Scales", "Renewing Blaze", "Time Dilation", "Emerald Communion", "Zephyr", "Gladiator's Medallion"
+            "Obsidian Scales", "Renewing Blaze", "Time Dilation", "Emerald Communion", "Zephyr", "Feign Death", "Gladiator's Medallion"
     );
     private static final Set<String> OFFENSIVE_NAMES = Set.of(
             "Zenith", "Combustion", "Icy Veins", "Arcane Surge", "Voidform", "Dark Ascension", "Power Infusion", "Celestial Alignment",

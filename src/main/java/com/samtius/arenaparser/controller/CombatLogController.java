@@ -75,4 +75,19 @@ public class CombatLogController {
             );
         }
     }
+
+    @PostMapping("/reimport-all-arena-matches")
+    public ArenaImportResponse reimportAllArenaMatches() {
+        try {
+            var detectedMatches = combatLogImportService.detectArenaMatchesFromAllLogs();
+            var importedMatches = arenaMatchService.importDetectedMatches(detectedMatches);
+            return new ArenaImportResponse(detectedMatches.size(), importedMatches, detectedMatches.size() - importedMatches);
+        } catch (IOException | IllegalStateException exception) {
+            throw new ResponseStatusException(
+                    INTERNAL_SERVER_ERROR,
+                    "Could not reimport arena matches from all configured combat logs",
+                    exception
+            );
+        }
+    }
 }
