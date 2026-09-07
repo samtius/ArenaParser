@@ -28,8 +28,8 @@ class CombatLogImportServiceTest {
 
         assertThat(summary.eventCount()).isEqualTo(3);
         assertThat(summary.totalDamageBySource())
-                .containsEntry("Samtius", 3500L)
-                .containsEntry("Enemy Mage", 900L);
+                .containsEntry("Test Warrior", 3500L)
+                .containsEntry("Test Mage", 900L);
     }
 
     @Test

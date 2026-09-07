@@ -32,6 +32,7 @@ application-local.yml
 
 # WoW combat logs and local databases
 WoWCombatLog.txt
+WoWCombatLog*.txt
 *.db
 *.sqlite
 *.sqlite3

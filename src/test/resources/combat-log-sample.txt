@@ -1,4 +1,4 @@
-8/11 18:30:01.123  SPELL_DAMAGE,Player-1-00000001,"Samtius",0x511,0x0,Player-1-00000002,"Enemy Mage",0x548,0x0,12345,"Mortal Strike",0x1,1200,-1,1,0,0,0,nil,nil,nil
-8/11 18:30:02.456  SPELL_HEAL,Player-1-00000001,"Samtius",0x511,0x0,Player-1-00000001,"Samtius",0x511,0x0,67890,"Victory Rush",0x1,500,0,0,nil
-8/11 18:30:03.789  SPELL_DAMAGE,Player-1-00000001,"Samtius",0x511,0x0,Player-1-00000002,"Enemy Mage",0x548,0x0,23456,"Execute",0x1,2300,-1,1,0,0,0,nil,nil,nil
-8/11 18:30:04.012  SPELL_DAMAGE,Player-1-00000002,"Enemy Mage",0x548,0x0,Player-1-00000001,"Samtius",0x511,0x0,34567,"Fireball",0x4,900,-1,4,0,0,0,nil,nil,nil
+8/11 18:30:01.123  SPELL_DAMAGE,Player-Test-00000001,"Test Warrior",0x511,0x0,Player-Test-00000002,"Test Mage",0x548,0x0,12345,"Mortal Strike",0x1,1200,-1,1,0,0,0,nil,nil,nil
+8/11 18:30:02.456  SPELL_HEAL,Player-Test-00000001,"Test Warrior",0x511,0x0,Player-Test-00000001,"Test Warrior",0x511,0x0,67890,"Victory Rush",0x1,500,0,0,nil
+8/11 18:30:03.789  SPELL_DAMAGE,Player-Test-00000001,"Test Warrior",0x511,0x0,Player-Test-00000002,"Test Mage",0x548,0x0,23456,"Execute",0x1,2300,-1,1,0,0,0,nil,nil,nil
+8/11 18:30:04.012  SPELL_DAMAGE,Player-Test-00000002,"Test Mage",0x548,0x0,Player-Test-00000001,"Test Warrior",0x511,0x0,34567,"Fireball",0x4,900,-1,4,0,0,0,nil,nil,nil

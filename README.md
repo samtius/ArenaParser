@@ -126,6 +126,20 @@ BATTLENET_CLIENT_SECRET=
 
 `.env` is intentionally ignored by Git. Never commit real database passwords or machine-specific paths. When a new setting is introduced, add a safe example to `.env.example` as well.
 
+### Keep local data out of Git
+
+The repository ignores `.env`, timestamped `WoWCombatLog*.txt` files, database files and generated build output. Files under `src/test/resources` are short, synthetic parser fixtures only; do not replace them with a real combat log.
+
+Before committing or making a fork public, verify what Git will publish:
+
+```powershell
+git status
+git ls-files | Select-String -Pattern '\.env$|WoWCombatLog|\.db$|\.sqlite'
+git diff --cached
+```
+
+The only expected environment file in `git ls-files` is `.env.example`, which must contain placeholders rather than working credentials. If a real secret was ever committed, removing it in a later commit is not enough because it remains in Git history. Revoke or rotate the credential immediately, then remove it from history before publishing.
+
 ### Optional Battle.net profile sync
 
 ArenaParser starts with Watur and Shadowfiend on Defias Brotherhood in its tracked-character list. Additional characters can be added manually in the dashboard. Profiles remain stored locally when Battle.net integration is disabled.
